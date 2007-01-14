@@ -1,0 +1,170 @@
+#! /usr/bin/env python2.2
+# Copyright (c) 2002 ekit.com Inc (http://www.ekit-inc.com/)
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+#   The above copyright notice and this permission notice shall be included in
+#   all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# $Id: roundup-reminder,v 1.8 2004-02-11 00:21:46 richard Exp $
+
+'''
+Simple script that emails all users of a tracker with the issues that
+are currently assigned to them.
+
+TODO: introduce some structure ;)
+TODO: possibly make this more general and configurable...
+'''
+
+import sys, cStringIO, MimeWriter, smtplib
+from roundup import instance, date
+from roundup.mailer import SMTPConnection
+
+# open the instance
+if len(sys.argv) != 2:
+    print 'You need to specify an instance home dir'
+instance_home = sys.argv[1]
+instance = instance.open(instance_home)
+db = instance.open('admin')
+
+resolved_id = db.status.lookup('resolved')
+
+def listCompare(x, y):
+    "compare two tuples such that order is positive on [0] and negative on [1]"
+    if x[0] < y[0]:
+        return -1
+    if x[0] > y[0]:
+        return 1
+    if x[1] > y[1]:
+        return -1
+    if x[1] < y[1]:
+        return 1
+    return 0
+
+# loop through all the users
+for user_id in db.user.list():
+    # make sure we care aboue this user
+    name = db.user.get(user_id, 'realname')
+    if name is None:
+        name = db.user.get(user_id, 'username')
+    address = db.user.get(user_id, 'address')
+    if address is None:
+        continue
+
+    # extract this user's issues
+    l = []
+    for issue_id in db.issue.find(assignedto=user_id):
+        if db.issue.get(issue_id, 'status') == resolved_id:
+            continue
+        order = db.priority.get(db.issue.get(issue_id, 'priority'), 'order')
+        l.append((order, db.issue.get(issue_id, 'activity'),
+            db.issue.get(issue_id, 'creation'), issue_id))
+
+    # sort the issues by timeliness and creation date
+    l.sort(listCompare)
+    if not l:
+        continue
+
+    # generate the email message
+    message = cStringIO.StringIO()
+    writer = MimeWriter.MimeWriter(message)
+    writer.addheader('Subject', 'Your active %s issues'%db.config.TRACKER_NAME)
+    writer.addheader('To', address)
+    writer.addheader('From', '%s <%s>'%(db.config.TRACKER_NAME,
+        db.config.ADMIN_EMAIL))
+    writer.addheader('Reply-To', '%s <%s>'%(db.config.TRACKER_NAME,
+        db.config.ADMIN_EMAIL))
+    writer.addheader('MIME-Version', '1.0')
+    writer.addheader('X-Roundup-Name', db.config.TRACKER_NAME)
+
+    # start the multipart
+    part = writer.startmultipartbody('alternative')
+    part = writer.nextpart()
+    body = part.startbody('text/plain')
+    
+    # do the plain text bit
+    print >>body, 'Created     ID   Urgency   Title'
+    print >>body, '='*75
+    #             '2 months    213  immediate cc_daemon barfage
+    old_priority = None
+    for priority_order, activity_date, creation_date, issue_id in l:
+        priority = db.issue.get(issue_id, 'priority')
+        if (priority != old_priority):
+            old_priority = priority
+            print >>body, '    ', db.priority.get(priority,'name')
+        # pretty creation
+        creation = (date.Date('.') - creation_date).pretty()
+        if creation is None:
+            creation = creation_date.pretty()
+        activity = (date.Date('.') - activity_date).pretty()
+        title = db.issue.get(issue_id, 'title')
+        if len(title) > 42:
+            title = title[:38] + ' ...'
+        print >>body, '%-11s %-4s %-9s %-42s'%(creation, issue_id,
+            activity, title)
+
+    # some help to finish off
+    print >>body, '''
+To view or respond to any of the issues listed above, visit the URL
+
+   %s
+
+and click on "My Issues". Do NOT respond to this message.
+'''%db.config.TRACKER_WEB
+
+
+    # now the HTML one
+    part = writer.nextpart()
+    body = part.startbody('text/html')
+    colours = {
+        'immediate': ' bgcolor="#ffcdcd"',
+        'day': ' bgcolor="#ffdecd"',
+        'week': ' bgcolor="#ffeecd"',
+        'month': ' bgcolor="#ffffcd"',
+        'whenever': ' bgcolor="#ffffff"',
+    }
+    print >>body, '''<table border>
+<tr><th>Created</th> <th>ID</th> <th>Activity</th> <th>Title</th></tr>
+'''
+    old_priority = None
+    for priority_order, activity_date, creation_date, issue_id in l:
+        priority = db.issue.get(issue_id,'priority')
+        if (priority != old_priority):
+           old_priority = priority
+           print >>body, '<tr><td>-></td><td>-></td><td>-></td><td><b>%s</b></td></tr>'%db.priority.get(priority,'name')
+        creation = (date.Date('.') - creation_date).pretty()
+        if creation is None:
+            creation = creation_date.pretty()
+        title = db.issue.get(issue_id, 'title')
+        issue_id = '<a href="%sissue%s">%s</a>'%(db.config.TRACKER_WEB,
+            issue_id, issue_id)
+        activity = (date.Date('.') - activity_date).pretty()
+        print >>body, '''<tr><td>%s</td><td>%s</td><td>%s</td>
+    <td>%s</td></tr>'''%(creation, issue_id, activity, title)
+    print >>body, '</table>'
+
+    print >>body, '''<p>To view or respond to any of the issues listed
+        above, simply click on the issue ID. Do <b>not</b> respond to
+        this message.</p>'''
+
+    # finish of the multipart
+    writer.lastpart()
+
+    # all done, send!
+    smtp = SMTPConnection(db.config)
+    smtp.sendmail(db.config.ADMIN_EMAIL, address, message.getvalue())
+
+# vim: set filetype=python ts=4 sw=4 et si

@@ -1,0 +1,9 @@
+*.pyc
+*.pyo
+localconfig.py
+build
+demo
+dist
+MANIFEST
+_test_*
+*.cover

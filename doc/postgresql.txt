@@ -1,0 +1,43 @@
+==========================
+PostgreSQL/psycopg Backend
+==========================
+
+This are notes about PostqreSQL backend based on the psycopg adapter for
+Roundup issue tracker.
+
+Prerequisites
+=============
+
+To use PostgreSQL as backend for storing roundup data, you should
+additionally install:
+
+1. PostgreSQL 7.x - http://www.postgresql.org/
+
+2. The psycopg python interface to PostgreSQL:
+
+     http://initd.org/software/initd/psycopg
+
+   It is recommended that you use at least version 1.1.21
+
+Some advice on setting up the postgresql backend may be found at:
+
+  http://www.magma.com.ni/wiki/index.cgi?TipsRoundupPostgres
+
+
+Running the PostgreSQL unit tests
+=================================
+
+The user that you're running the tests as will need to be able to access
+the postgresql database on the local machine and create and drop
+databases. Edit the ``test/test_postgresql.py`` database connection info if
+you wish to test against a different database.
+
+The test database will be called "rounduptest".
+
+
+Credit
+======
+
+The postgresql backend was originally submitted by Federico Di Gregorio
+<fog@initd.org>
+

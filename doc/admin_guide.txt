@@ -1,0 +1,365 @@
+====================
+Administration Guide
+====================
+
+:Version: $Revision: 1.23 $
+
+.. contents::
+
+What does Roundup install?
+==========================
+
+There's two "installations" that we talk about when using Roundup:
+
+1. The installation of the software and its support files. This uses the
+   standard Python mechanism called "distutils" and thus Roundup's core code,
+   executable scripts and support data files are installed in Python's
+   directories. On Windows, this is typically:
+
+   Scripts
+     ``<python dir>\scripts\...``
+   Core code
+     ``<python dir>\lib\site-packages\roundup\...``
+   Support files
+     ``<python dir>\share\roundup\...``
+
+   and on Unix-like systems (eg. Linux):
+
+   Scripts
+     ``<python root>/bin/...``
+   Core code
+     ``<python root>/lib-<python version>/site-packages/roundup/...``
+   Support files
+     ``<python root>/share/roundup/...``
+
+2. The installation of a specific tracker. When invoking the roundup-admin
+   "inst" (and "init") commands, you're creating a new Roundup tracker. This
+   installs configuration files, HTML templates, detector code and a new
+   database. You have complete control over where this stuff goes through
+   both choosing your "tracker home" and the ``main`` -> ``database`` variable
+   in the tracker's config.ini.
+
+
+Configuring Roundup's Logging of Messages For Sysadmins
+=======================================================
+
+You may configure where Roundup logs messages in your tracker's config.ini
+file. Roundup will use the standard Python (2.3+) logging implementation
+when available. If not, then a very basic logging implementation will be used
+(see BasicLogging in the roundup.rlog module for details).
+
+Configuration for standard "logging" module:
+ - tracker configuration file specifies the location of a logging
+   configration file as ``logging`` -> ``config``
+ - ``roundup-server`` specifies the location of a logging configuration
+   file on the command line
+Configuration for "BasicLogging" implementation:
+ - tracker configuration file specifies the location of a log file
+   ``logging`` -> ``filename``
+ - tracker configuration file specifies the level to log to as
+   ``logging`` -> ``level``
+ - ``roundup-server`` specifies the location of a log file on the command
+   line
+ - ``roundup-server`` specifies the level to log to on the command line
+
+(``roundup-mailgw`` always logs to the tracker's log file)
+
+In both cases, if no logfile is specified then logging will simply be sent
+to sys.stderr with only logging of ERROR messages.
+
+
+Configuring roundup-server
+==========================
+
+The basic configuration file layout is as follows (take from the
+``roundup-server.ini.example`` file in the "doc" directory)::
+
+    [main]
+    port = 8080
+    ;hostname =
+    ;user =
+    ;group =
+    ;log_ip = yes
+    ;pidfile =
+    ;logfile =
+
+    [trackers]
+    ; Add one of these per tracker being served
+    name = /path/to/tracker/name
+
+Values ";commented out" are optional. The meaning of the various options
+are as follows:
+
+**port**
+  Defines the local TCP port to listen for clients on.
+**hostname**
+  Defines the local hostname to listen for clients on. Only required if
+  "localhost" is not sufficient.
+**user** and **group**
+  Defines the Unix user and group to run the server as. Only work if the
+  server is started as root.
+**log_ip**
+  If ``yes`` then we log IP addresses against accesses. If ``no`` then we
+  log the hostname of the client. The latter can be much slower.
+**pidfile**
+  If specified, the server will fork at startup and write its new PID to
+  the file.
+**logfile**
+  Any unhandled exception messages or other output from Roundup will be
+  written to this file. It must be specified if **pidfile** is specified.
+  If per-tracker logging is specified, then very little will be written to
+  this file.
+**trackers** section
+  Each line denotes a mapping from a URL component to a tracker home.
+  Make sure the name part doesn't include any url-unsafe characters like
+  spaces. Stick to alphanumeric characters and you'll be ok.
+
+
+Users and Security
+==================
+
+Roundup holds its own user database which primarily contains a username,
+password and email address for the user. Roundup *must* have its own user
+listing, in order to maintain internal consistency of its data. It is a
+relatively simple exercise to update this listing on a regular basis, or on
+demand, so that it matches an external listing (eg. unix passwd file, LDAP,
+etc.)
+
+Roundup identifies users in a number of ways:
+
+1. Through the web, users may be identified by either HTTP Basic
+   Authentication or cookie authentication. If you are running the web
+   server (roundup-server) through another HTTP server (eg. apache or IIS)
+   then that server may require HTTP Basic Authentication, and it will pass
+   the ``REMOTE_USER`` variable through to Roundup. If this variable is not
+   present, then Roundup defaults to using its own cookie-based login
+   mechanism.
+2. In email messages handled by roundup-mailgw, users are identified by the
+   From address in the message.
+
+In both cases, Roundup's behaviour when dealing with unknown users is
+controlled by Permissions defined in the "SECURITY SETTINGS" section of the
+tracker's ``schema.py`` module:
+
+Web Registration
+  If granted to the Anonymous Role, then anonymous users will be able to
+  register through the web.
+Email Registration
+  If granted to the Anonymous Role, then email messages from unknown users
+  will result in those users being registered with the tracker.
+
+More information about how to customise your tracker's security settings
+may be found in the `customisation documentation`_.
+
+
+Tasks
+=====
+
+Maintenance of Roundup can involve one of the following:
+
+1. `tracker backup`_
+2. `software upgrade`_
+3. `migrating backends`_
+4. `moving a tracker`_
+5. `migrating from other software`_
+6. `adding a user from the command-line`_
+
+
+Tracker Backup
+--------------
+
+Stop the web and email frontends and to copy the contents of the tracker home
+directory to some other place using standard backup tools.
+
+
+Software Upgrade
+----------------
+
+Always make a backup of your tracker before upgrading software. Steps you may
+take:
+
+1. Ensure that the unit tests run on your system::
+
+    python run_tests.py
+
+2. If you're using an RDBMS backend, make a backup of its contents now.
+3. Make a backup of the tracker home itself.
+4. Stop the tracker web and email frontends.
+5. Follow the steps in the `upgrading documentation`_ for the new version of
+   the software in the copied.
+6. You may test each of the admin tool, web interface and mail gateway using
+   the new version of the software. To do this, invoke the scripts directly
+   in the source directory with::
+
+    PYTHONPATH=. python roundup/scripts/roundup_server.py <normal arguments>
+    PYTHONPATH=. python roundup/scripts/roundup_admin.py <normal arguments>
+    PYTHONPATH=. python roundup/scripts/roundup_mailgw.py <normal arguments>
+
+   Note that on Windows, this would read::
+
+    C:\sources\roundup-0.7.4> SET PYTHONPATH=.
+    C:\sources\roundup-0.7.4> python roundup/scripts/roundup_server.py <normal arguments>
+
+7. Once you're comfortable that the upgrade will work using that copy, you
+   should install the new version of the software::
+
+    python setup.py install
+
+8. Restart your tracker web and email frontends.
+
+If something bad happens, you may reinstate your backup of the tracker and
+reinstall the older version of the sofware using the same install command::
+
+    python setup.py install
+
+
+Migrating Backends
+------------------
+
+1. Stop the existing tracker web and email frontends (preventing changes).
+2. Use the roundup-admin tool "export" command to export the contents of
+   your tracker to disk.
+3. Copy the tracker home to a new directory.
+4. Delete the "db" directory from the new directory.
+5. Enter the new backend name in the tracker home ``db/backend_name`` file.
+6. Use the roundup-admin "import" command to import the previous export with
+   the new tracker home. If non-interactively::
+     
+     roundup-admin -i <tracker home> import <tracker export dir>
+
+   If interactively, enter 'commit' before exitting.
+7. Test each of the admin tool, web interface and mail gateway using the new
+   backend.
+8. Move the old tracker home out of the way (rename to "tracker.old") and
+   move the new tracker home into its place.
+9. Restart web and email frontends.
+
+
+Moving a Tracker
+----------------
+
+If you're moving the tracker to a similar machine, you should:
+
+1. install Roundup on the new machine and test that it works there,
+2. stop the existing tracker web and email frontends (preventing changes),
+3. copy the tracker home directory over to the new machine, and
+4. start the tracker web and email frontends on the new machine.
+
+Most of the backends are actually portable across platforms (ie. from Unix to
+Windows to Mac). If this isn't the case (ie. the tracker doesn't work when
+moved using the above steps) then you'll need to:
+
+1. install Roundup on the new machine and test that it works there,
+2. stop the existing tracker web and email frontends (preventing changes),
+3. use the roundup-admin tool "export" command to export the contents of
+   the existing tracker,
+4. copy the export to the new machine,
+5. use the roundup-admin "import" command to import the tracker on the new
+   machine, and
+6. start the tracker web and email frontends on the new machine.
+
+
+Migrating From Other Software
+-----------------------------
+
+You have a couple of choices. You can either use a CSV import into Roundup,
+or you can write a simple Python script which uses the Roundup API
+directly. The latter is almost always simpler -- see the "scripts"
+directory in the Roundup source for some example uses of the API.
+
+"roundup-admin import" will import data into your tracker from a
+directory containing files with the following format:
+
+- one colon-separated-values file per Class with columns for each property,
+  named <classname>.csv
+- one colon-separated-values file per Class with journal information,
+  named <classname>-journals.csv (this is required, even if it's empty)
+- if the Class is a FileClass, you may have the "content" property
+  stored in separate files from the csv files. This goes in a directory
+  structure::
+
+      <classname>-files/<N>/<designator>
+
+  where ``<designator>`` is the item's ``<classname><id>`` combination.
+  The ``<N>`` value is ``int(<id> / 1000)``.
+
+
+Adding A User From The Command-Line
+-----------------------------------
+
+The ``roundup-admin`` program can create any data you wish to in the
+database. To create a new user, use::
+
+    roundup-admin create user
+
+To figure out what good values might be for some of the fields (eg. Roles)
+you can just display another user::
+
+    roundup-admin list user
+
+(or if you know their username, and it happens to be "richard")::
+
+    roundup-admin find username=richard
+
+then using the user id you get from one of the above commands, you may
+display the user's details::
+
+    roundup-admin display <userid>
+
+
+Running the Servers
+===================
+
+Unix
+----
+
+On Unix systems, use the scripts/server-ctl script to control the
+roundup-server server. Copy it somewhere and edit the variables at the top
+to reflect your specific installation.
+
+
+Windows
+-------
+
+On Windows, the roundup-server program runs as a Windows Service, and
+therefore may be controlled through the Services control panel. The
+roundup-server program may also control the service directly:
+
+**install the service**
+  ``roundup-server -C /path/to/my/roundup-server.ini -c install``
+**start the service**
+  ``roundup-server -c start``
+**stop the service**
+  ``roundup-server -c stop``
+
+To bring up the services panel:
+
+Windows 2000 and later
+  Start/Control Panel/Administrative Tools/Services
+Windows NT4
+  Start/Control Panel/Services
+
+You will need a server configuration file (as described in
+`Configuring roundup-server`_) for specifying tracker homes
+and other roundup-server configuration. Specify the name of
+this file using the ``-C`` switch when installing the service.
+
+Running the Mail Gateway Script
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The mail gateway script should be scheduled to run regularly on your
+Windows server. Normally this will result in a window popping up. The
+solution to this is to:
+
+1. Create a new local account on the Roundup server
+2. Set the scheduled task to run in the context of this user instead
+   of your normal login
+
+
+-------------------
+
+Back to `Table of Contents`_
+
+.. _`Table of Contents`: index.html
+.. _`customisation documentation`: customizing.html
+.. _`upgrading documentation`: upgrading.html
