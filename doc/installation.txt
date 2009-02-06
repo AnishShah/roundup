@@ -1,0 +1,1039 @@
+==================
+Installing Roundup
+==================
+
+:Version: $Revision: 1.130 $
+
+.. contents::
+   :depth: 2
+
+
+Overview
+========
+
+Broken out separately, there are several conceptual pieces to a
+Roundup installation:
+
+Roundup trackers
+ Trackers consist of issues (be they bug reports or otherwise), tracker
+ configuration file(s), web HTML files etc. Roundup trackers are initialised
+ with a "Template" which defines the fields usable/assignable on a
+ per-issue basis.  Descriptions of the provided templates are given in
+ `choosing your template`_.
+
+Roundup support code
+ Installed into your Python install's lib directory.
+
+Roundup scripts
+ These include the email gateway, the roundup
+ HTTP server, the roundup administration command-line interface, etc.
+
+
+Prerequisites
+=============
+
+Roundup requires Python 2.3 or newer with a functioning anydbm
+module. Download the latest version from http://www.python.org/.
+It is highly recommended that users install the latest patch version
+of python as these contain many fixes to serious bugs.
+
+Some variants of Linux will need an additional "python dev" package
+installed for Roundup installation to work. Debian and derivatives, are
+known to require this.
+
+If you're on windows, you will either need to be using the ActiveState python
+distribution (at http://www.activestate.com/Products/ActivePython/), or you'll
+have to install the win32all package separately (get it from
+http://starship.python.net/crew/mhammond/win32/).
+
+
+Optional Components
+===================
+
+You may optionally install and use:
+
+Timezone Definitions
+  Full timezone support requires pytz_ module (version 2005i or later)
+  which brings the `Olson tz database`_ into Python.  If pytz_ is not
+  installed, timezones may be specified as numeric hour offsets only.
+
+An RDBMS
+  Sqlite, MySQL and Postgresql are all supported by Roundup and will be
+  used if available. One of these is recommended if you are anticipating a
+  large user base (see `choosing your backend`_ below).
+
+Xapian full-text indexer
+  The Xapian_ full-text indexer is also supported and will be used by
+  default if it is available. This is strongly recommended if you are
+  anticipating a large number of issues (> 5000).
+
+  You may install Xapian at any time, even after a tracker has been
+  installed and used. You will need to run the "roundup-admin reindex"
+  command if the tracker has existing data.
+
+  Roundup requires Xapian *newer* than 0.9.2 - it may be necessary for
+  you to install a snapshot. Snapshot "0.9.2_svn6532" has been tried
+  successfully.
+
+pyopenssl
+  If pyopenssl_ is installed the roundup-server can be configured
+  to serve trackers over SSL. If you are going to serve roundup via
+  proxy through a server with SSL support (e.g. apache) then this is
+  unnecessary.
+
+pyme
+  If pyme_ is installed you can configure the mail gateway to perform
+  verification or decryption of incoming OpenPGP MIME messages. When
+  configured, you can require email to be cryptographically signed
+  before roundup will allow it to make modifications to issues.
+
+.. _Xapian: http://www.xapian.org/
+.. _pytz: http://www.python.org/pypi/pytz
+.. _Olson tz database: http://www.twinsun.com/tz/tz-link.htm
+.. _pyopenssl: http://pyopenssl.sourceforge.net
+.. _pyme: http://pyme.sourceforge.net
+
+
+Getting Roundup
+===============
+
+.. note::
+    Some systems, such as Debian and NetBSD, already have Roundup
+    installed. Try running the command "roundup-admin" with no arguments,
+    and if it runs you may skip the `Basic Installation Steps`_
+    below and go straight to `configuring your first tracker`_.
+
+Download the latest version from http://roundup.sf.net/.
+
+If you're using WinZIP's "classic" interface, make sure the "Use
+folder names" check box is checked before you extract the files.
+
+
+For The Really Impatient
+========================
+
+If you just want to give Roundup a whirl Right Now, then simply run
+``roundup-demo``.
+
+This will set up a simple demo tracker on your machine. [1]_
+When it's done, it'll print out a URL to point your web browser at
+so you may start playing. Three users will be set up:
+
+1. anonymous - the "default" user with permission to do very little
+2. demo (password "demo") - a normal user who may create issues
+3. admin (password "admin") - an administrative user who has complete
+   access to the tracker
+
+.. [1] Demo tracker is set up to be accessed by localhost browser.
+       If you run demo on a server host, please stop the demo when
+       it has shown startup notice, open file ``demo/config.ini`` with
+       your editor, change host name in the ``web`` option in section
+       ``[tracker]``, save the file, then re-run the demo program.
+
+Installation
+============
+
+Set aside 15-30 minutes. There's several steps to follow in your
+installation:
+
+1. `basic installation steps`_ if Roundup is not installed on your system
+2. `configuring your first tracker`_ that all installers must follow
+3. then optionally `configure a web interface`_
+4. and optionally `configure an email interface`_
+5. `UNIX environment steps`_ to take if you're installing on a shared
+   UNIX machine and want to restrict local access to roundup
+6. `additional language codecs`_
+
+For information about how Roundup installs, see the `administration
+guide`_.
+
+
+Basic Installation Steps
+------------------------
+
+To install the Roundup support code into your Python tree and
+Roundup scripts into /usr/bin (substitute that path for whatever is
+appropriate on your system). You need to have write permissions
+for these locations, eg. being root on unix::
+
+    python setup.py install
+
+If you would like to place the Roundup scripts in a directory other
+than ``/usr/bin``, then specify the preferred location with
+``--install-scripts``. For example, to install them in
+``/opt/roundup/bin``::
+
+    python setup.py install --install-scripts=/opt/roundup/bin
+
+You can also use the ``--prefix`` option to use a completely different
+base directory, if you do not want to use administrator rights. If you
+choose to do this, you may have to change Python's search path (sys.path)
+yourself.
+
+
+Configuring your first tracker
+------------------------------
+
+1. To create a Roundup tracker (necessary to do before you can
+   use the software in any real fashion), you need to set up a "tracker
+   home":
+
+   a. (Optional) If you intend to keep your roundup trackers
+      under one top level directory which does not exist yet,
+      you should create that directory now.  Example::
+
+         mkdir /opt/roundup/trackers
+
+   b. Either add the Roundup script location to your ``PATH``
+      environment variable or specify the full path to
+      the command in the next step.
+
+   c. Install a new tracker with the command ``roundup-admin install``.
+      You will be asked a series of questions.  Descriptions of the provided
+      templates can be found in `choosing your template`_ below.  Descriptions
+      of the available backends can be found in `choosing your backend`_
+      below.  The questions will be something like (you may have more
+      templates or backends available)::
+
+          Enter tracker home: /opt/roundup/trackers/support
+          Templates: classic
+          Select template [classic]: classic
+          Back ends: anydbm, mysql, sqlite
+          Select backend [anydbm]: anydbm
+
+      Note: "Back ends" selection list depends on availability of
+      third-party database modules.  Standard python distribution
+      includes anydbm module only.
+
+      The "support" part of the tracker name can be anything you want - it
+      is going to be used as the directory that the tracker information
+      will be stored in.
+
+      You will now be directed to edit the tracker configuration and
+      initial schema.  At a minimum, you must set "main :: admin_email"
+      (that's the "admin_email" option in the "main" section) "mail ::
+      host", "tracker :: web" and "mail :: domain".  If you get stuck,
+      and get configuration file errors, then see the `tracker
+      configuration`_ section of the `customisation documentation`_.
+
+      If you just want to get set up to test things quickly (and follow
+      the instructions in step 3 below), you can even just set the
+      "tracker :: web" variable to::
+
+         web = http://localhost:8080/support/
+
+      The URL *must* end in a '/', or your web interface *will not work*.
+      See `Customising Roundup`_ for details on configuration and schema
+      changes. You may change any of the configuration after
+      you've initialised the tracker - it's just better to have valid values
+      for this stuff now.
+
+   d. Initialise the tracker database with ``roundup-admin initialise``.
+      You will need to supply an admin password at this step. You will be
+      prompted::
+
+          Admin Password:
+                 Confirm:
+
+      Note: running this command will *destroy any existing data in the
+      database*. In the case of MySQL and PostgreSQL, any exsting database
+      will be dropped and re-created.
+
+      Once this is done, the tracker has been created.
+
+2. At this point, your tracker is set up, but doesn't have a nice user
+   interface. To set that up, we need to `configure a web interface`_ and
+   optionally `configure an email interface`_. If you want to try your
+   new tracker out, assuming "tracker :: web" is set to
+   ``'http://localhost:8080/support/'``, run::
+
+     roundup-server support=/opt/roundup/trackers/support
+
+   then direct your web browser at:
+
+     http://localhost:8080/support/
+
+   and you should see the tracker interface.
+
+
+Choosing Your Template
+----------------------
+
+Classic Template
+~~~~~~~~~~~~~~~~
+
+The classic template is the one defined in the `Roundup Specification`_. It
+holds issues which have priorities and statuses. Each issue may also have a
+set of messages which are disseminated to the issue's list of nosy users.
+
+Minimal Template
+~~~~~~~~~~~~~~~~
+
+The minimal template has the minimum setup required for a tracker
+installation. That is, it has the configuration files, defines a user database
+and the basic HTML interface to that. It's a completely clean slate for you to
+create your tracker on.
+
+
+Choosing Your Backend
+---------------------
+
+The actual storage of Roundup tracker information is handled by backends.
+There's several to choose from, each with benefits and limitations:
+
+========== =========== ===== ==============================
+Name       Speed       Users   Support
+========== =========== ===== ==============================
+anydbm     Slowest     Few   Always available
+sqlite     Fastest(*)  Few   May need install (PySQLite_)
+postgresql Fast        Many  Needs install/admin (psycopg_)
+mysql      Fast        Many  Needs install/admin (MySQLdb_)
+========== =========== ===== ==============================
+
+**sqlite**
+  This uses the embedded database engine PySQLite_ to provide a very fast
+  backend. This is not suitable for trackers which will have many
+  simultaneous users, but requires much less installation and maintenance
+  effort than more scalable postgresql and mysql backends.
+
+  SQLite is supported via PySQLite versions 1.1.7, 2.1.0 and sqlite3 (the last
+  being bundled with Python 2.5+)
+
+  Installed SQLite should be the latest version available (3.3.8 is known
+  to work, 3.1.3 is known to have problems).
+**postgresql**
+  Backend for popular RDBMS PostgreSQL. You must read doc/postgresql.txt for
+  additional installation steps and requirements. You must also configure
+  the ``rdbms`` section of your tracker's ``config.ini``.  It is recommended
+  that you use at least version 1.1.21 of psycopg.
+**mysql**
+  Backend for popular RDBMS MySQL. You must read doc/mysql.txt for additional
+  installation steps and requirements. You must also configure the ``rdbms``
+  section of your tracker's ``config.ini``
+
+You may defer your decision by setting your tracker up with the anydbm
+backend (which is guaranteed to be available) and switching to one of the
+other backends at any time using the instructions in the `administration
+guide`_.
+
+Regardless of which backend you choose, Roundup will attempt to initialise
+a new database for you when you run the roundup-admin "initialise" command.
+In the case of MySQL and PostgreSQL you will need to have the appropriate
+privileges to create databases.
+
+
+Configure a Web Interface
+-------------------------
+
+There are five web interfaces to choose from:
+
+1. `web server cgi-bin`_
+2. `stand-alone web server`_
+3. `Zope product - ZRoundup`_
+4. `Apache HTTP Server with mod_python`_
+5. `WSGI handler`_
+
+You may need to give the web server user permission to access the tracker home
+- see the `UNIX environment steps`_ for information. You may also need to
+configure your system in some way - see `platform-specific notes`_.
+
+
+Web Server cgi-bin
+~~~~~~~~~~~~~~~~~~
+
+A benefit of using the cgi-bin approach is that it's the easiest way to
+restrict access to your tracker to only use HTTPS. Access will be slower
+than through the `stand-alone web server`_ though.
+
+If your Python isn't installed as "python" then you'll need to edit
+the ``roundup.cgi`` script to fix the first line.
+
+If you're using IIS on a Windows platform, you'll need to run this command
+for the cgi to work (it turns on the PATH_INFO cgi variable)::
+
+    adsutil.vbs set w3svc/AllowPathInfoForScriptMappings TRUE
+
+The ``adsutil.vbs`` file can be found in either ``c:\inetpub\adminscripts``
+or ``c:\winnt\system32\inetsrv\adminsamples\`` or
+``c:\winnt\system32\inetsrv\adminscripts\`` depending on your installation.
+
+More information about ISS setup may be found at:
+
+   http://support.microsoft.com/default.aspx?scid=kb%3Ben-us%3B276494
+
+Copy the ``frontends/roundup.cgi`` file to your web server's ``cgi-bin``
+directory. You will need to configure it to tell it where your tracker home
+is. You can do this either:
+
+Through an environment variable
+  Set the variable TRACKER_HOMES to be a colon (":") separated list of
+  name=home pairs (if you're using apache, the SetEnv directive can do this)
+
+Directly in the ``roundup.cgi`` file itself
+  Add your instance to the TRACKER_HOMES variable as ``'name': 'home'``
+
+The "name" part of the configuration will appear in the URL and identifies the
+tracker (so you may have more than one tracker per cgi-bin script). Make sure
+there are no spaces or other illegal characters in it (to be safe, stick to
+letters and numbers). The "name" forms part of the URL that appears in the
+tracker config "tracker :: web" variable, so make sure they match. The "home"
+part of the configuration is the tracker home directory.
+
+If you're using Apache, you can use an additional trick to hide the
+``.cgi`` extension of the cgi script. Place the ``roundup.cgi`` script
+wherever you want it to be, rename it to just ``roundup``, and add a
+couple lines to your Apache configuration::
+
+ <Location /path/to/roundup>
+   SetHandler cgi-script
+ </Location>
+
+
+Stand-alone Web Server
+~~~~~~~~~~~~~~~~~~~~~~
+
+This approach will give you faster response than cgi-bin. You may
+investigate using ProxyPass or similar configuration in apache to have your
+tracker accessed through the same URL as other systems.
+
+The stand-alone web server is started with the command ``roundup-server``. It
+has several options - display them with ``roundup-server -h``.
+
+The tracker home configuration is similar to the cgi-bin - you may either edit
+the script to change the TRACKER_HOMES variable or you may supply the
+name=home values on the command-line after all the other options.
+
+To make the server run in the background, use the "-d" option, specifying the
+name of a file to write the server process id (pid) to.
+
+
+Zope Product - ZRoundup
+~~~~~~~~~~~~~~~~~~~~~~~
+
+ZRoundup installs as a regular Zope product. Copy the ZRoundup directory to
+your Products directory either in INSTANCE_HOME/Products or the Zope
+code tree lib/python/Products.
+
+When you next (re)start up Zope, you will be able to add a ZRoundup object
+that interfaces to your new tracker.
+
+Apache HTTP Server with mod_python
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+`Mod_python`_ is an `Apache`_ module that embeds the Python interpreter
+within the server.  Running Roundup this way is much faster than all
+above options and, like `web server cgi-bin`_, allows you to use HTTPS
+protocol.  The drawback is that this setup is more complicated.
+
+The following instructions were tested on apache 2.0 with mod_python 3.1.
+If you are using older versions, your mileage may vary.
+
+Mod_python uses OS threads.  If your apache was built without threads
+(quite commonly), you must load the threading library to run mod_python.
+This is done by setting ``LD_PRELOAD`` to your threading library path
+in apache ``envvars`` file.  Example for gentoo linux (``envvars`` file
+is located in ``/usr/lib/apache2/build/``)::
+
+  LD_PRELOAD=/lib/libpthread.so.0
+  export LD_PRELOAD
+
+Example for FreeBSD (``envvars`` is in ``/usr/local/sbin/``)::
+
+  LD_PRELOAD=/usr/lib/libc_r.so
+  export LD_PRELOAD
+
+Next, you have to add Roundup trackers configuration to apache config.
+Roundup apache interface uses two options specified with ``PythonOption``
+directives:
+
+  TrackerHome:
+    defines the tracker home directory - the directory that was specified
+    when you did ``roundup-admin init``.  This option is required.
+
+  TrackerLaguage:
+    defines web user interface language.  mod_python applications do not
+    receive OS environment variables in the same way as command-line
+    programs, so the language cannot be selected by setting commonly
+    used variables like ``LANG`` or ``LC_ALL``.  ``TrackerLanguage``
+    value has the same syntax as values of these environment variables.
+    This option may be omitted.
+
+  TrackerDebug:
+    run the tracker in debug mode.  Setting this option to ``yes`` or
+    ``true`` has the same effect as running ``roundup-server -t debug``:
+    the database schema and used html templates are rebuilt for each
+    HTTP request.  Values ``no`` or ``false`` mean that all html
+    templates for the tracker are compiled and the database schema is
+    checked once at startup.  This is the default behaviour.
+
+  TrackerTiming:
+    has nearly the same effect as environment variable ``CGI_SHOW_TIMING``
+    for standalone roundup server.  The difference is that setting this
+    option to ``no`` or ``false`` disables timings display.  Value
+    ``comment`` writes request handling times in html comment, and
+    any other non-empty value makes timing report visible.  By default,
+    timing display is disabled.
+
+In the following example we have two trackers set up in
+``/var/db/roundup/support`` and ``/var/db/roundup/devel`` and accessed
+as ``https://my.host/roundup/support/`` and ``https://my.host/roundup/devel/``
+respectively (provided Apache has been set up for SSL of course).
+Having them share same parent directory allows us to
+reduce the number of configuration directives.  Support tracker has
+russian user interface.  The other tracker (devel) has english user
+interface (default).
+
+Static files from ``html`` directory are served by apache itself - this
+is quickier and generally more robust than doing that from python.
+Everything else is aliased to dummy (non-existing) ``py`` file,
+which is handled by mod_python and our roundup module.
+
+Example mod_python configuration::
+
+    #################################################
+    # Roundup Issue tracker
+    #################################################
+    # enable Python optimizations (like 'python -O')
+    PythonOptimize On
+    # let apache handle static files from 'html' directories
+    AliasMatch /roundup/(.+)/@@file/(.*) /var/db/roundup/$1/html/$2
+    # everything else is handled by roundup web UI
+    AliasMatch /roundup/([^/]+)/(?!@@file/)(.*) /var/db/roundup/$1/dummy.py/$2
+    # roundup requires a slash after tracker name - add it if missing
+    RedirectMatch permanent ^/roundup/([^/]+)$ /roundup/$1/
+    # common settings for all roundup trackers
+    <Directory /var/db/roundup/*>
+      Order allow,deny
+      Allow from all
+      AllowOverride None
+      Options None
+      AddHandler python-program .py
+      PythonHandler roundup.cgi.apache
+      # uncomment the following line to see tracebacks in the browser
+      # (note that *some* tracebacks will be displayed anyway)
+      #PythonDebug On
+    </Directory>
+    # roundup tracker homes
+    <Directory /var/db/roundup/support>
+      PythonOption TrackerHome /var/db/roundup/support
+      PythonOption TrackerLanguage ru
+    </Directory>
+    <Directory /var/db/roundup/devel>
+      PythonOption TrackerHome /var/db/roundup/devel
+    </Directory>
+
+Notice that the ``/var/db/roundup`` path shown above refers to the directory
+in which the tracker homes are stored. The actual value will thus depend on
+your system.
+
+On Windows the corresponding lines will look similar to these::
+
+    AliasMatch /roundup/(.+)/@@file/(.*) C:/DATA/roundup/$1/html/$2
+    AliasMatch /roundup/([^/]+)/(?!@@file/)(.*) C:/DATA/roundup/$1/dummy.py/$2
+    <Directory C:/DATA/roundup/*>
+    <Directory C:/DATA/roundup/support>
+    <Directory C:/DATA/roundup/devel>
+
+In this example the directory hosting all of the tracker homes is
+``C:\DATA\roundup``. (Notice that you must use forward slashes in paths
+inside the httpd.conf file!)
+
+The URL for accessing these trackers then become:
+`http://<roundupserver>/roundup/support/`` and
+``http://<roundupserver>/roundup/devel/``
+
+Note that in order to use https connections you must set up Apache for secure
+serving with SSL.
+
+WSGI Handler
+~~~~~~~~~~~~
+
+The WSGI handler is quite simple. The following sample code shows how
+to use it::
+
+    from wsgiref.simple_server import make_server
+
+    # obtain the WSGI request dispatcher
+    from roundup.cgi.wsgi_handler import RequestDispatcher
+    tracker_home = 'demo'
+    app = RequestDispatcher(tracker_home)
+
+    httpd = make_server('', 8917, app)
+    httpd.serve_forever()
+
+To test the above you should create a demo tracker with ``python demo.py``.
+Edit the ``config.ini`` to change the web URL to "http://localhost:8917/".
+
+
+Configure an Email Interface
+----------------------------
+
+If you don't want to use the email component of Roundup, then remove the
+"``nosyreaction.py``" module from your tracker "``detectors``" directory.
+
+See `platform-specific notes`_ for steps that may be needed on your system.
+
+There are five supported ways to get emailed issues into the
+Roundup tracker.  You should pick ONE of the following, all
+of which will continue my example setup from above:
+
+As a mail alias pipe process
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set up a mail alias called "issue_tracker" as (include the quote marks):
+"``|/usr/bin/python /usr/bin/roundup-mailgw <tracker_home>``"
+(substitute ``/usr/bin`` for wherever roundup-mailgw is installed).
+
+In some installations (e.g. RedHat Linux and Fedora Core) you'll need to
+set up smrsh so sendmail will accept the pipe command. In that case,
+symlink ``/etc/smrsh/roundup-mailgw`` to "``/usr/bin/roundup-mailgw``"
+and change the command to::
+
+    |roundup-mailgw /opt/roundup/trackers/support
+
+To test the mail gateway on unix systems, try::
+
+    echo test |mail -s '[issue] test' support@YOUR_DOMAIN_HERE
+
+Be careful that some mail systems (postfix for example) will impost a
+limits on processes they spawn. In particular postfix can set a file size
+limit. *This can cause your Roundup database to become corrupted.*
+
+
+As a custom router/transport using a pipe process (Exim4 specific)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following configuration snippets for `Exim 4`_ configuration
+implement a custom router & transport to accomplish mail delivery to
+roundup-mailgw. A configuration for Exim3 is similar but not
+included, since Exim3 is considered obsolete.
+
+.. _Exim 4: http://www.exim.org/
+
+This configuration is similar to the previous section, in that it uses
+a pipe process. However, there are advantages to using a custom
+router/transport process, if you are using Exim.
+
+* This avoids privilege escalation, since otherwise the pipe process
+  will run as the mail user, typically mail. The transport can be
+  configured to run as the user appropriate for the task at hand. In the
+  transport described in this section, Exim4 runs as the unprivileged
+  user ``roundup``.
+
+* Separate configuration is not required for each tracker
+  instance. When a email arrives at the server, Exim passes it through
+  the defined routers. The roundup_router looks for a match with one of
+  the roundup directories, and if there is one it is passed to the
+  roundup_transport, which uses the pipe process described in the
+  previous section (`As a mail alias pipe process`_).
+
+The matching is done in the line::
+
+  require_files = /usr/bin/roundup-mailgw:ROUNDUP_HOME/$local_part/schema.py
+
+The following configuration has been tested on Debian Sarge with
+Exim4.
+
+.. note::
+  Note that the Debian Exim4 packages don't allow pipes in alias files
+  by default, so the method described in the section `As a mail alias
+  pipe process`_ will not work with the default configuration. However,
+  the method described in this section does. See the discussion in
+  ``/usr/share/doc/exim4-config/README.system_aliases`` on any Debian
+  system with Exim4 installed.
+
+  For more Debian-specific information, see suggested addition to
+  README.Debian in
+  http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=343283, which will
+  hopefully be merged into the Debian package eventually.
+
+This config makes a few assumptions:
+
+* That the mail address corresponding to the tracker instance has the
+  same name as the directory of the tracker instance, i.e. the mail
+  interface address corresponding to a Roundup instance called
+  ``/var/lib/roundup/trackers/mytracker`` is ``mytracker@your.host``.
+
+* That (at least) all the db subdirectories of all the tracker
+  instances (ie. ``/var/lib/roundup/trackers/*/db``) are owned by the same
+  user, in this case, 'roundup'.
+
+* That if the ``schema.py`` file exists, then the tracker is ready for
+  use. Another option is to use the ``config.ini`` file (this changed
+  in 0.8 from ``config.py``).
+
+Macros for Roundup router/transport. Should be placed in the macros
+section of the Exim4 config::
+
+  # Home dir for your Roundup installation
+  ROUNDUP_HOME=/var/lib/roundup/trackers
+
+  # User and group for Roundup.
+  ROUNDUP_USER=roundup
+  ROUNDUP_GROUP=roundup
+
+Custom router for Roundup. This will (probably) work if placed at the
+beginning of the router section of the Exim4 config::
+
+  roundup_router:
+      driver = accept
+      # The config file config.ini seems like a more natural choice, but the
+      # file config.py was replaced by config.ini in 0.8, and schema.py needs
+      # to be present too.
+      require_files = /usr/bin/roundup-mailgw:ROUNDUP_HOME/$local_part/schema.py
+      transport = roundup_transport
+
+Custom transport for Roundup. This will (probably) work if placed at
+the beginning of the router section of the Exim4 config::
+
+  roundup_transport:
+      driver = pipe
+      command = /usr/bin/python /usr/bin/roundup-mailgw ROUNDUP_HOME/$local_part/
+      current_directory = ROUNDUP_HOME
+      home_directory = ROUNDUP_HOME
+      user = ROUNDUP_USER
+      group = ROUNDUP_GROUP
+
+As a regular job using a mailbox source
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set ``roundup-mailgw`` up to run every 10 minutes or so. For example
+(substitute ``/usr/bin`` for wherever roundup-mailgw is installed)::
+
+  0,10,20,30,40,50 * * * * /usr/bin/roundup-mailgw /opt/roundup/trackers/support mailbox <mail_spool_file>
+
+Where the ``mail_spool_file`` argument is the location of the roundup submission
+user's mail spool. On most systems, the spool for a user "issue_tracker"
+will be "``/var/mail/issue_tracker``".
+
+As a regular job using a POP source
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To retrieve from a POP mailbox, use a *cron* entry similar to the mailbox
+one (substitute ``/usr/bin`` for wherever roundup-mailgw is
+installed)::
+
+  0,10,20,30,40,50 * * * * /usr/bin/roundup-mailgw /opt/roundup/trackers/support pop <pop_spec>
+
+where pop_spec is "``username:password@server``" that specifies the roundup
+submission user's POP account name, password and server.
+
+On windows, you would set up the command using the windows scheduler.
+
+As a regular job using an IMAP source
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To retrieve from an IMAP mailbox, use a *cron* entry similar to the
+POP one (substitute ``/usr/bin`` for wherever roundup-mailgw is
+installed)::
+
+  0,10,20,30,40,50 * * * * /usr/bin/roundup-mailgw /opt/roundup/trackers/support imap <imap_spec>
+
+where imap_spec is "``username:password@server``" that specifies the roundup
+submission user's IMAP account name, password and server. You may
+optionally include a mailbox to use other than the default ``INBOX`` with
+"``imap username:password@server mailbox``".
+
+If you have a secure (ie. HTTPS) IMAP server then you may use ``imaps``
+in place of ``imap`` in the command to use a secure connection.
+
+As with the POP job, on windows, you would set up the command using the
+windows scheduler.
+
+
+UNIX Environment Steps
+----------------------
+
+Each tracker ideally should have its own UNIX group, so create
+a UNIX group (edit ``/etc/group`` or your appropriate NIS map if
+you're using NIS).  To continue with my examples so far, I would
+create the UNIX group 'support', although the name of the UNIX
+group does not have to be the same as the tracker name.  To this
+'support' group I then add all of the UNIX usernames who will be
+working with this Roundup tracker.  In addition to 'real' users,
+the Roundup email gateway will need to have permissions to this
+area as well, so add the user your mail service runs as to the
+group (typically "mail" or "daemon").  The UNIX group might then
+look like::
+
+     support:*:1002:jblaine,samh,geezer,mail
+
+If you intend to use the web interface (as most people do), you
+should also add the username your web server runs as to the group.
+My group now looks like this::
+
+     support:*:1002:jblaine,samh,geezer,mail,apache
+
+The tracker "db" directory should be chmod'ed g+sw so that the group can
+write to the database, and any new files created in the database will be owned
+by the group.
+
+If you're using the mysql or postgresql backend then you'll need to ensure
+that the tracker user has appropriate permissions to create/modify the
+database. If you're using roundup.cgi, the apache user needs permissions
+to modify the database.  Alternatively, explicitly specify a database login
+in ``rdbms`` -> ``user`` and ``password`` in ``config.ini``.
+
+An alternative to the above is to create a new user who has the sole
+responsibility of running roundup. This user:
+
+1. runs the CGI interface daemon
+2. runs regular polls for email
+3. runs regular checks (using cron) to ensure the daemon is up
+4. optionally has no login password so that nobody but the "root" user
+   may actually login and play with the roundup setup.
+
+If you're using a Linux system (e.g. Fedora Core) with SELinux enabled,
+you will need to ensure that the db directory has a context that
+permits the web server to modify and create files. If you're using the
+mysql or postgresql backend you may also need to update your policy to
+allow the web server to access the database socket.
+
+
+Additional Language Codecs
+--------------------------
+
+If you intend to send messages to Roundup that use Chinese, Japanese or
+Korean encodings the you'll need to obtain CJKCodecs from
+http://cjkpython.berlios.de/
+
+
+Public Tracker Considerations
+-----------------------------
+
+If you run a public tracker, you will eventually have to think about
+dealing with spam entered through both the web and mail interfaces.
+
+The `customisation documentation`_ has a simple detector that will block
+a lot of spam attempts. Look for the example "Preventing SPAM".
+
+
+Maintenance
+===========
+
+Read the separate `administration guide`_ for information about how to
+perform common maintenance tasks with Roundup.
+
+
+Upgrading
+=========
+
+Read the separate `upgrading document`_, which describes the steps needed to
+upgrade existing tracker trackers for each version of Roundup that is
+released.
+
+
+Further Reading
+===============
+
+If you intend to use Roundup with anything other than the default
+templates, if you would like to hack on Roundup, or if you would
+like implementation details, you should read `Customising Roundup`_.
+
+
+Running Multiple Trackers
+=========================
+
+Things to think about before you jump off the deep end and install
+multiple trackers, which involve additional URLs, user databases, email
+addresses, databases to back up, etc.
+
+1. Do you want a tracker per product you sell/support? You can just add
+   a new property to your issues called Product, and filter by that. See
+   the customisation example `adding a new field to the classic schema`_.
+2. Do you want to track internal software development issues and customer
+   support issues separately? You can just set up an additional "issue"
+   class called "cust_issues" in the same tracker, mimicing the normal
+   "issue" class, but with different properties. See the customisation
+   example `tracking different types of issues`_.
+
+
+Platform-Specific Notes
+=======================
+
+Windows command-line tools
+--------------------------
+
+To make the command-line tools accessible in Windows, you need to update
+the "Path" environment variable in the Registry via a dialog box.
+
+On Windows 2000 and later:
+
+1) Press the "Start" button.
+2) Choose "Settings"
+3) Choose "Control Panel"
+4) Choose "System"
+5) Choose "Advanced"
+6) Choose "Environmental Variables"
+7) Add: "<dir>\Scripts" to the "Path" environmental variable.
+
+Where <dir> in 7) is the root directory (e.g., ``C:\Python22\Scripts``)
+of your Python installation.
+
+I understand that in XP, 2) above is not needed as "Control
+Panel" is directly accessible from "Start".
+
+I do not believe this is possible to do in previous versions of Windows.
+
+
+Windows Server
+--------------
+
+To have the Roundup web server start up when your machine boots up, there
+are two different methods, the scheduler and installing the service.
+
+
+1. Using the Windows scheduler
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set up the following in Scheduled Tasks (note, the following is for a
+cygwin setup):
+
+**Run**
+
+    ``c:\cygwin\bin\bash.exe -c "roundup-server TheProject=/opt/roundup/trackers/support"``
+
+**Start In**
+
+    ``C:\cygwin\opt\roundup\bin``
+
+**Schedule**
+
+    At System Startup
+
+To have the Roundup mail gateway run periodically to poll a POP email address,
+set up the following in Scheduled Tasks:
+
+**Run**
+
+    ``c:\cygwin\bin\bash.exe -c "roundup-mailgw /opt/roundup/trackers/support pop roundup:roundup@mail-server"``
+
+**Start In**
+
+    ``C:\cygwin\opt\roundup\bin``
+
+**Schedule**
+
+    Every 10 minutes from 5:00AM for 24 hours every day
+
+    Stop the task if it runs for 8 minutes
+
+
+2. Installing the roundup server as a Windows service
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This is more Windows oriented and will make the Roundup server run as
+soon as the PC starts up without any need for a login or such. It will
+also be available in the normal Windows Administrative Tools.
+
+For this you need first to create a service ini file containing the
+relevant settings.
+
+1. It is created if you execute the following command from within the
+   scripts directory (notice the use of backslashes)::
+
+     roundup-server -S -C <trackersdir>\server.ini -n <servername> -p 8080 -l <trackersdir>\trackerlog.log software=<trackersdir>\Software
+
+   where the item ``<trackersdir>`` is replaced with the physical directory
+   that hosts all of your trackers. The ``<servername>`` item is the name
+   of your roundup server PC, such as w2003srv or similar.
+
+2. Next open the now created file ``C:\DATA\roundup\server.ini`` file
+   (if your ``<trackersdir>`` is ``C:\DATA\roundup``).
+   Check the entries for correctness, especially this one::
+
+    [trackers]
+    software = C:\DATA\Roundup\Software
+
+   (this is an example where the tracker is named software and its home is
+   ``C:\DATA\Roundup\Software``)
+
+3. Next give the commands that actually installs and starts the service::
+
+    roundup-server -C C:\DATA\Roundup\server.ini -c install
+    roundup-server -c start
+
+4. Finally open the AdministrativeTools/Services applet and locate the
+   Roundup service entry. Open its properties and change it to start
+   automatically instead of manually.
+
+If you are using Apache as the webserver you might want to use it with
+mod_python instead to serve out Roundup. In that case see the mod_python
+instructions above for details.
+
+
+Sendmail smrsh
+--------------
+
+If you use Sendmail's ``smrsh`` mechanism, you will need to tell
+smrsh that roundup-mailgw is a valid/trusted mail handler
+before it will work.
+
+This is usually done via the following 2 steps:
+
+1. make a symlink in ``/etc/smrsh`` called ``roundup-mailgw``
+   which points to the full path of your actual ``roundup-mailgw``
+   script.
+
+2. change your alias to ``"|roundup-mailgw <tracker_home>"``
+
+
+Linux
+-----
+
+Make sure you read the instructions under `UNIX environment steps`_.
+
+
+Solaris
+-------
+
+You'll need to build Python.
+
+Make sure you read the instructions under `UNIX environment steps`_.
+
+
+Problems? Testing your Python...
+================================
+
+.. note::
+   The ``run_tests.py`` script is packaged in Roundup's source distribution
+   - users of the Windows installer, other binary distributions or
+   pre-installed Roundup will need to download the source to use it.
+
+Once you've unpacked roundup's source, run ``python run_tests.py`` in the
+source directory and make sure there are no errors. If there are errors,
+please let us know!
+
+If the above fails, you may be using the wrong version of python. Try
+``python2 run_tests.py``. If that works, you will need to substitute
+``python2`` for ``python`` in all further commands you use in relation to
+Roundup -- from installation and scripts.
+
+
+-------------------------------------------------------------------------------
+
+Back to `Table of Contents`_
+
+Next: `User Guide`_
+
+.. _`table of contents`: index.html
+.. _`user guide`: user_guide.html
+.. _`roundup specification`: spec.html
+.. _`tracker configuration`: customizing.html#tracker-configuration
+.. _`customisation documentation`: customizing.html
+.. _`Adding a new field to the classic schema`:
+   customizing.html#adding-a-new-field-to-the-classic-schema
+.. _`Tracking different types of issues`:
+   customizing.html#tracking-different-types-of-issues
+.. _`customising roundup`: customizing.html
+.. _`upgrading document`: upgrading.html
+.. _`administration guide`: admin_guide.html
+
+
+.. _External hyperlink targets:
+
+.. _apache: http://httpd.apache.org/
+.. _mod_python: http://www.modpython.org/
+.. _MySQLdb: http://sourceforge.net/projects/mysql-python
+.. _Psycopg: http://initd.org/software/initd/psycopg
+.. _pysqlite: http://pysqlite.org/

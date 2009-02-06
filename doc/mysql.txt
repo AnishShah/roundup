@@ -1,0 +1,60 @@
+=============
+MySQL Backend
+=============
+
+:version: $Revision: 1.13 $
+
+This notes detail the MySQL backend for the Roundup issue tracker.
+
+
+Prerequisites
+=============
+
+To use MySQL as the backend for storing roundup data, you also need 
+to install:
+
+1. MySQL RDBMS 4.0.18 or higher - http://www.mysql.com. Your MySQL
+   installation MUST support InnoDB tables (or Berkeley DB (BDB) tables
+   if you have no other choice). If you're running < 4.0.18 (but not <4.0)
+   then you'll need to use BDB to pass all unit tests. Edit the
+   ``roundup/backends/back_mysql.py`` file to enable DBD instead of InnoDB.
+2. Python MySQL interface - http://sourceforge.net/projects/mysql-python
+
+Running the MySQL tests
+=======================
+
+Roundup tests expect an empty MySQL database. Two alternate ways to provide 
+this:
+
+1. If you have root permissions on the MySQL server, you can create 
+   the necessary database entries using the follwing SQL sequence. Use
+   ``mysql`` on the command line to enter::
+
+       CREATE DATABASE rounduptest;
+       USE rounduptest;
+       GRANT ALL PRIVILEGES ON rounduptest.* TO rounduptest@localhost
+            IDENTIFIED BY 'rounduptest';
+       FLUSH PRIVILEGES;
+
+2. If your administrator has provided you with database connection info, 
+   you can modify MYSQL_* constants in the file test/test_db.py with 
+   the correct values.
+
+The MySQL database should not contain any tables. Tests will not 
+drop the database with existing data.
+
+
+Showing MySQL who's boss
+========================
+
+If things ever get to the point where that test database is totally hosed,
+just::
+
+  $ su -
+  # /etc/init.d/mysql stop
+  # rm -rf /var/lib/mysql/rounduptest
+  # /etc/init.d/mysql start
+
+and all will be better (note that on some systems, ``mysql`` is spelt
+``mysqld``).
+
