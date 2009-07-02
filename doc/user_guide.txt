@@ -1,0 +1,804 @@
+==========
+User Guide
+==========
+
+.. contents::
+
+.. hint::
+   This document will refer to *issues* as the primary store of
+   information in the tracker. This is the default of the classic template,
+   but may vary in any given installation.
+
+
+Your Tracker in a Nutshell
+==========================
+
+Your tracker holds information about issues in bundles we call *items*.
+An item may be an *issue* (a bug or feature request) or a *user*. The
+issue-ness or user-ness is called the item's *class*. So, for bug
+reports and features, the class is "issue", and for users the class is
+"user".
+
+Each item in the tracker has an ID number that identifies it along with
+its item class. To identify a particular issue or user, we combine the
+class with the number to create a unique label, so that user 1 (who,
+incidentally, is *always* the "admin" user) is referred to as "user1".
+Issue number 315 is referred to as "issue315". We call that label the
+item's *designator*.
+
+Items in the database are never deleted, they're just "retired". You
+can still refer to them by ID - hence removing an item won't break
+references to the item. It's just that the item won't appear in any
+listings.
+
+
+Accessing the Tracker
+---------------------
+
+You may access your tracker through one of three ways:
+
+1. through the `web interface`_,
+2. through the `e-mail gateway`_, or
+3. using the `command line tool`_.
+
+The last is usually only used by administrators. Most users will use the
+web and e-mail interfaces. All three are explained below.
+
+
+Issue life cycles in Roundup
+----------------------------
+
+New issues may be submitted via the web or e-mail.
+
+By default, the issue will have the status "unread". If another message
+is received for the issue, its status will change to "chatting". 
+
+The "home" page for a tracker will generally display all issues which
+are not "resolved".
+
+If an issue is closed, and a new message is received then it'll be
+reopened to the state of "chatting".
+
+The full set of **prority** and **status** values are:
+
+=========== =====================================
+Priority    Description
+=========== =====================================
+"critical"  panic: work is stopped!
+"urgent"    important, but not deadly
+"bug"       lost work or incorrect results
+"feature"   want missing functionality
+"wish"      avoidable bugs, missing conveniences
+=========== =====================================
+
+============= =====================================
+Status        Description
+============= =====================================
+"unread"      submitted but no action yet
+"deferred"    intentionally set aside
+"chatting"    under review or seeking clarification
+"need-eg"     need a reproducible example of a bug
+"in-progress" understood; development in progress
+"testing"     we think it's done; others, please test
+"done-cbb"    okay for now, but could be better
+"resolved"    fix has been released
+============= =====================================
+
+
+Entering values in your Tracker
+-------------------------------
+
+All interfaces to your tracker use the same format for entering values.
+This means the web interface for entering a new issue, the web interface
+for searching issues, the e-mail interface and even the command-line
+administration tool.
+
+
+String and Numeric properties
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+These fields just take a simple text value, like ``It's broken``.
+
+
+Boolean properties
+~~~~~~~~~~~~~~~~~~
+
+These fields take a value which indicates "yes"/"no", "true"/"false",
+"1"/"0" or "on"/"off".
+
+
+Constrained (link and multilink) properties
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Fields like "Assigned To" and "Keywords" hold references to items in other
+classes ("user" and "keyword" in those two cases.)
+
+Sometimes, the selection is done through a menu, like in the "Assigned
+To" field.
+
+Where the input is not a simple menu selection, we use a comma-separated
+list of values to indicated which values of "user" or "keyword" are
+interesting. The values may be either numeric ids or the names of items.
+The special value "-1" may be used to match items where the property is
+not set. For example, the following searches on the issues:
+
+``assignedto=richard,george``
+  match issues which are assigned to richard or george.
+``assignedto=-1``
+  match issues that are not assigned to a user.
+``assignedto=2,3,40``
+  match issues that are assigned to users 2, 3 or 40.
+``keyword=user interface``
+  match issues with the keyword "user interface" in their keyword list
+``keyword=web interface,e-mail interface``
+  match issues with the keyword "web interface" or "e-mail interface" in
+  their keyword list
+``keyword=-1``
+  match issues with no keywords set
+
+
+Date properties
+~~~~~~~~~~~~~~~
+
+Date-and-time stamps are specified with the date in
+international standard format (``yyyy-mm-dd``) joined to the time
+(``hh:mm:ss``) by a period ``.``.  Dates in this form can be easily
+compared and are fairly readable when printed.  An example of a valid
+stamp is ``2000-06-24.13:03:59``. We'll call this the "full date
+format".  When Timestamp objects are printed as strings, they appear in
+the full date format.
+
+For user input, some partial forms are also permitted: the whole time or
+just the seconds may be omitted; and the whole date may be omitted or
+just the year may be omitted.  If the time is given, the time is
+interpreted in the user's local time zone. The Date constructor takes
+care of these conversions. In the following examples, suppose that
+``yyyy`` is the current year, ``mm`` is the current month, and ``dd`` is
+the current day of the month.
+
+-   "2000-04-17" means <Date 2000-04-17.00:00:00>
+-   "01-25" means <Date yyyy-01-25.00:00:00>
+-   "2000-04-17.03:45" means <Date 2000-04-17.08:45:00>
+-   "08-13.22:13" means <Date yyyy-08-14.03:13:00>
+-   "11-07.09:32:43" means <Date yyyy-11-07.14:32:43>
+-   "14:25" means
+-   <Date yyyy-mm-dd.19:25:00>
+-   "8:47:11" means
+-   <Date yyyy-mm-dd.13:47:11>
+-   the special date "." means "right now"
+
+
+When searching, a plain date entered as a search field will match that date
+exactly in the database.  We may also accept ranges of dates. You can
+specify range of dates in one of two formats:
+
+1. English syntax::
+
+    [From <value>][To <value>]
+
+   Keywords "From" and "To" are case insensitive. Keyword "From" is
+   optional.
+
+2. "Geek" syntax::
+
+    [<value>];[<value>]
+
+Either first or second ``<value>`` can be omitted in both syntaxes.
+
+For example, if you enter string "from 9:00" to "Creation date" field,
+roundup will find  all issues, that were created today since 9 AM.
+
+The ``<value>`` may also be an interval, as described in the next section.
+Searching of "-2m; -1m" on activity field gives you issues which were
+active between period of time since 2 months up-till month ago.
+
+Other possible examples (consider local time is 2003-03-08.22:07:48):
+
+- "from 2-12 to 4-2" means
+  <Range from 2003-02-12.00:00:00 to 2003-04-02.00:00:00>
+- "FROM 18:00 TO +2m" means
+  <Range from 2003-03-08.18:00:00 to 2003-05-08.20:07:48>
+- "12:00;" means
+  <Range from 2003-03-08.12:00:00 to None>
+- "tO +3d" means
+  <Range from None to 2003-03-11.20:07:48>
+- "2002-11-10; 2002-12-12" means
+  <Range from 2002-11-10.00:00:00 to 2002-12-12.00:00:00>
+- "; 20:00 +1d" means
+  <Range from None to 2003-03-09.20:00:00>
+- "2003" means
+  <Range from 2003-01-01.00:00:00 to 2003-12-31.23:59:59>
+- "2003-04" means
+  <Range from 2003-04-01.00:00:00 to 2003-04-30.23:59:59>
+    
+
+Interval properties
+~~~~~~~~~~~~~~~~~~~
+
+Date intervals are specified using the suffixes "y", "m", and "d".  The
+suffix "w" (for "week") means 7 days. Time intervals are specified in
+hh:mm:ss format (the seconds may be omitted, but the hours and minutes
+may not).
+
+-   "3y" means three years
+-   "2y 1m" means two years and one month
+-   "1m 25d" means one month and 25 days
+-   "2w 3d" means two weeks and three days
+-   "1d 2:50" means one day, two hours, and 50 minutes
+-   "14:00" means 14 hours
+-   "0:04:33" means four minutes and 33 seconds
+
+
+Simple support for collision detection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Item edit pages remember when the item was last edited. When a form is
+submitted, the user will be informed if someone else has edited the item
+at the same time they tried to.
+
+
+Web Interface
+=============
+
+.. note::
+   This document contains screenshots of the default look and feel.
+   Your site may have a slightly (or very) different look, but the
+   functionality will be very similar, and the concepts still hold.
+
+The web interface is broken up into the following parts:
+
+1. `lists of items`_,
+2. `display, edit or entry of an item`_, and
+3. `searching page`_.
+
+
+Lists of Items
+--------------
+
+The first thing you'll see when you log into Roundup will be a list of
+open (ie. not resolved) issues. This list has been generated by a bunch
+of controls `under the covers`_ but for now, you can see something like:
+
+.. image:: images/index_logged_out.png
+
+The screen is divided up into three sections. There's a title which tells
+you where you are, a sidebar which contains useful navigation tools and a
+body which usually displays either a list of items or a single item from
+the tracker.
+
+You may either register or log in. Registration takes you to:
+
+.. image:: images/registration.png
+
+Once you're logged in, the sidebar changes to:
+
+.. image:: images/index_logged_in.png
+
+You can now get to your "My Details" page:
+
+.. image:: images/my_details.png
+
+
+Display, edit or entry of an item
+---------------------------------
+
+Create a new issue with "create new" under the issue subheading. This
+will take you to:
+
+.. image:: images/new_issue.png
+
+Editing an issue uses the same form, though now you'll see attached files
+and messages, and the issue history at the bottom of the page:
+
+.. image:: images/edit_issue.png
+
+
+Searching Page
+--------------
+
+See `entering values in your tracker`_ for an explanation of what you
+may type into the search form.
+
+
+Saving queries
+~~~~~~~~~~~~~~
+
+You may save queries in the tracker by giving the query a name. Each user
+may only have one query with a given name - if a subsequent search is
+performed with the same query name supplied, then it will edit the
+existing query of the same name.
+
+Queries may be marked as "private". These queries are only visible to the
+user that created them. If they're not marked "private" then all other
+users may include the query in their list of "Your Queries". Marking it as
+private at a later date does not affect users already using the query, nor
+does deleting the query.
+
+If a user subsequently creates or edits a public query, a new personal
+version of that query is made, with the same editing rules as described
+above.
+
+
+Under the covers
+~~~~~~~~~~~~~~~~
+
+The searching page converts your selections into the following
+arguments:
+
+============ =============================================================
+Argument     Description
+============ =============================================================
+@sort        sort by prop name, optionally preceeded with '-' to give
+             descending or nothing for ascending sorting. The sort
+             argument can have several props separated with comma.
+@group       group by prop name, optionally preceeded with '-' or to sort
+             in descending or nothing for ascending order. The group
+             argument can have several props separated with comma.
+@columns     selects the columns that should be displayed. Default is
+             all.                     
+@filter      indicates which properties are being used in filtering.
+             Default is none.
+propname     selects the values the item properties given by propname must
+             have (very basic search/filter).
+@search_text performs a full-text search (message bodies, issue titles,
+             etc)
+============ =============================================================
+
+You may manually write URLS that contain these arguments, like so
+(whitespace has been added for clarity)::
+
+    /issue?status=unread,in-progress,resolved&
+        keyword=security,ui&
+        @group=priority,-status&
+        @sort=-activity&
+        @filters=status,keyword&
+        @columns=title,status,fixer
+
+
+Access Controls
+---------------
+
+User access is controlled through Permissions. These are are grouped
+into Roles, and users have a comma-separated list of Roles assigned to
+them.
+
+Permissions divide access controls up into answering questions like:
+
+- may the user edit issues ("Edit", "issue")
+- is the user allowed to use the web interface ("Web Access")
+- may the user edit other user's Roles through the web ("Web Roles")
+
+Any number of new Permissions and Roles may be created as described in
+the customisation documentation. Examples of new access controls are:
+
+- only managers may sign off issues as complete
+- don't give users who register through e-mail web access
+- let some users edit the details of all users
+
+
+E-Mail Gateway
+==============
+
+Roundup trackers may be used to facilitate e-mail conversations around
+issues. The "nosy" list attached to each issue indicates the users who
+should receive e-mail when messages are added to the issue.
+
+When e-mail comes into a tracker that identifies an issue in the subject
+line, the content of the e-mail is attached to the issue.
+
+You may even create new issues from e-mail messages.
+
+E-mail sent to a tracker is examined for several pieces of information:
+
+1. `subject-line information`_ identifying the purpose of the e-mail
+2. `sender identification`_ using the sender of the message
+3. `e-mail message content`_ which is to be extracted
+4. e-mail attachments which should be associated with the message
+
+
+Subject-line information
+------------------------
+
+The subject line of the incoming message is examined to find one of:
+
+1. the item that the message is responding to,
+2. the type of item the message should create, or
+3. we default the item class and try some trickiness
+
+If the subject line contains a prefix in ``[square brackets]`` then
+we're looking at case 1 or 2 above. Any "re:" or "fwd:" prefixes are
+stripped off the subject line before we start looking for real
+information.
+
+If an item designator (class name and id number, for example
+``issue123``) is found there, a new "msg" item is added to the
+"messages" property for that item, and any new "file" items are added to
+the "files" property for the item.
+
+If just an item class name is found there, we attempt to create a new
+item of that class with its "messages" property initialized to contain
+the new "msg" item and its "files" property initialized to contain any
+new "file" items.
+
+The third case above - where no ``[information]`` is provided, the
+tracker's ``MAIL_DEFAULT_CLASS`` configuration variable defines what
+class of item the message relates to. We try to match the subject line
+to an existing item of the default class, and if there's a match, the
+message is related to that matched item. If not, then a new item of the
+default class is created.
+
+
+Setting Properties
+~~~~~~~~~~~~~~~~~~
+
+The e-mail interface also provides a simple way to set properties on
+items. At the end of the subject line, propname=value pairs can be
+specified in square brackets, using the same conventions as for the
+roundup set shell command.
+
+For example,
+
+- setting the priority of an issue::
+
+   Subject: Re: [issue1] the coffee machine is broken! [priority=urgent]
+
+- adding yourself to a nosy list::
+
+   Subject: Re: [issue2] we're out of widgets [nosy=+richard]
+
+- setting the nosy list to just you and cliff::
+
+   Subject: Re: [issue2] we're out of widgets [nosy=richard,cliff]
+
+- removing yourself from a nosy list and setting the priority::
+
+   Subject: Re: [issue2] we're out of widgets [nosy=-richard;priority=bug]
+
+In all cases, the message relates to issue 2. The ``Re:`` prefix is
+stripped off.
+
+
+Automatic Properties
+~~~~~~~~~~~~~~~~~~~~
+
+**status of new issues**
+ When a new message is received that is not identified as being related
+ to an existing issue, it creates a new issue. The status of the new
+ issue is defaulted to "unread".
+
+**reopening of resolved issues**
+ When a message is is received for a resolved issue, the issue status is
+ automatically reset to "chatting" to indicate new information has been
+ received.
+
+
+Sender identification
+---------------------
+
+If the sender of an e-mail is unknown to Roundup (looking up both user
+primary e-mail addresses and their alternate addresses) then a new user
+may be created, depending on tracker configuration (see the `Admin
+Guide`_ section "Users and Security" for configuration details.)
+
+.. _`Admin Guide`: admin_guide.html
+
+The new user will have their username set to the "user" part of
+"user@domain" in their e-mail address. Their password will be
+completely randomised, and they'll have to visit the web interface to
+have it changed. Some sites don't allow web access by users who register
+via e-mail like this.
+
+
+E-Mail Message Content
+----------------------
+
+Roundup only associates plain text (MIME type ``text/plain``) as
+messages for items. Any other parts of a message are associated as
+downloadable files. If no plain text part is found, the message is
+rejected.
+
+To do this, incoming messages are examined for multiple parts:
+
+* In a multipart/mixed message or part, each subpart is extracted and
+  examined. The text/plain subparts are assembled to form the textual
+  body of the message, to be stored in the file associated with a "msg"
+  class item. Any parts of other types are each stored in separate files
+  and given "file" class items that are linked to the "msg" item.
+* In a multipart/alternative message or part, we look for a text/plain
+  subpart and ignore the other parts.
+
+If the message is a response to a previous message, and contains quoted
+sections, then these will be stripped out of the message if the
+``EMAIL_KEEP_QUOTED_TEXT`` configuration variable is set to ``'no'``.
+
+Message summary
+~~~~~~~~~~~~~~~
+
+The "summary" property on message items is taken from the first
+non-quoting section in the message body. The message body is divided
+into sections by blank lines. Sections where the second and all
+subsequent lines begin with a ">" or "|" character are considered
+"quoting sections". The first line of the first non-quoting section
+becomes the summary of the message.
+
+
+Address handling
+----------------
+
+All of the addresses in the ``To:`` and ``Cc:`` headers of the incoming
+message are looked up among the tracker users, and the corresponding
+users are placed in the "recipients" property on the new "msg" item. The
+address in the ``From:`` header similarly determines the "author"
+property of the new "msg" item. The default handling for addresses that
+don't have corresponding users is to create new users with no passwords
+and a username equal to the address.
+
+The addresses mentioned in the ``To:``, ``From:`` and ``Cc:`` headers of
+the message may be added to the `nosy list`_ depending on:
+
+``ADD_AUTHOR_TO_NOSY``
+ Does the author of a message get placed on the nosy list automatically?
+ If 'new' is used, then the author will only be added when a message
+ creates a new issue. If 'yes', then the author will be added on
+ followups too. If 'no', they're never added to the nosy.
+
+``ADD_RECIPIENTS_TO_NOSY``
+ Do the recipients (To:, Cc:) of a message get placed on the nosy list?
+ If 'new' is used, then the recipients will only be added when a message
+ creates a new issue. If 'yes', then the recipients will be added on
+ followups too. If 'no', they're never added to the nosy.
+
+
+Nosy List
+~~~~~~~~~
+
+Roundup watches for additions to the "messages" property of items.
+
+When a new message is added, it is sent to all the users on the "nosy"
+list for the item that are not already on the "recipients" list of the
+message. Those users are then appended to the "recipients" property on
+the message, so multiple copies of a message are never sent to the same
+user. The journal recorded by the hyperdatabase on the "recipients"
+property then provides a log of when the message was sent to whom.
+
+If the author of the message is also in the nosy list for the item that
+the message is attached to, then the config var ``MESSAGES_TO_AUTHOR``
+is queried to determine if they get a nosy list copy of the message too.
+
+
+Mail gateway script command line
+--------------------------------
+
+Usage::
+
+  roundup-mailgw [[-C class] -S field=value]* <instance home> [method]
+
+The roundup mail gateway may be called in one of three ways:
+
+ - with an instance home as the only argument,
+ - with both an instance home and a mail spool file, or
+ - with both an instance home and a pop server account.
+ 
+It also supports optional -C and -S arguments that allows you to set a
+fields for a class created by the roundup-mailgw. The default class if
+not specified is msg, but the other classes: issue, file, user can also
+be used. The -S or --set options uses the same
+property=value[;property=value] notation accepted by the command line
+roundup command or the commands that can be given on the Subject line of
+an e-mail message.
+
+It can let you set the type of the message on a per e-mail address basis.
+
+PIPE:
+ In the first case, the mail gateway reads a single message from the
+ standard input and submits the message to the roundup.mailgw module.
+
+UNIX mailbox:
+ In the second case, the gateway reads all messages from the mail spool
+ file and submits each in turn to the roundup.mailgw module. The file is
+ emptied once all messages have been successfully handled. The file is
+ specified as::
+
+   mailbox /path/to/mailbox
+
+POP:
+ In the third case, the gateway reads all messages from the POP server
+ specified and submits each in turn to the roundup.mailgw module. The
+ server is specified as::
+
+    pop username:password@server
+
+ The username and password may be omitted::
+
+    pop username@server
+    pop server
+
+ are both valid. The username and/or password will be prompted for if
+ not supplied on the command-line.
+
+APOP:
+ Same as POP, but using Authenticated POP::
+
+    apop username:password@server
+
+
+Command Line Tool
+=================
+
+The basic usage is::
+
+ Usage: roundup-admin [options] [<command> <arguments>]
+
+ Options:
+  -i instance home  -- specify the issue tracker "home directory" to administer
+  -u                -- the user[:password] to use for commands
+  -d                -- print full designators not just class id numbers
+  -c                -- when outputting lists of data, comma-separate them.
+               Same as '-S ","'.
+  -S <string>       -- when outputting lists of data, string-separate them
+  -s                -- when outputting lists of data, space-separate them.
+               Same as '-S " "'.
+
+  Only one of -s, -c or -S can be specified.
+
+ Help:
+  roundup-admin -h
+  roundup-admin help                       -- this help
+  roundup-admin help <command>             -- command-specific help
+  roundup-admin help all                   -- all available help
+
+ Commands: 
+  commit
+  create classname property=value ...
+  display designator[,designator]*
+  export [class[,class]] export_dir
+  find classname propname=value ...
+  get property designator[,designator]*
+  help topic
+  history designator
+  import import_dir
+  initialise [adminpw]
+  install [template [backend [admin password]]]
+  list classname [property]
+  pack period | date
+  reindex
+  retire designator[,designator]*
+  rollback
+  security [Role name]
+  set items property=value property=value ...
+  specification classname
+  table classname [property[,property]*]
+ Commands may be abbreviated as long as the abbreviation matches only one
+ command, e.g. l == li == lis == list.
+
+
+All commands (except help) require a tracker specifier. This is just the
+path to the roundup tracker you're working with. A roundup tracker is
+where roundup keeps the database and configuration file that defines an
+issue tracker. It may be thought of as the issue tracker's "home
+directory". It may be specified in the environment variable
+``TRACKER_HOME`` or on the command line as "``-i tracker``".
+
+A designator is a classname and an itemid concatenated, eg. bug1,
+user10, ... Property values are represented as strings in command
+arguments and in the printed results:
+
+- Strings are, well, strings.
+- Password values will display as their encoded value.
+- Date values are printed in the full date format in the local time
+  zone, and accepted in the full format or any of the partial formats
+  explained below.::
+  
+    Input of...        Means...
+    "2000-04-17.03:45" 2000-04-17.03:45:00
+    "2000-04-17"       2000-04-17.00:00:00
+    "01-25"            yyyy-01-25.00:00:00
+    "08-13.22:13"      yyyy-08-13.22:13:00
+    "11-07.09:32:43"   yyyy-11-07.09:32:43
+    "14:25"            yyyy-mm-dd.14:25:00
+    "8:47:11"          yyyy-mm-dd.08:47:11
+    "2003"             2003-01-01.00:00:00
+    "2003-04"          2003-04-01.00:00:00
+    "."                "right now"
+    
+- Link values are printed as item designators. When given as an
+  argument, item designators and key strings are both accepted.
+- Multilink values are printed as lists of item designators joined by
+  commas. When given as an argument, item designators and key strings
+  are both accepted; an empty string, a single item, or a list of items
+  joined by commas is accepted.
+  
+When multiple items are specified to the roundup get or roundup set
+commands, the specified properties are retrieved or set on all the
+listed items.  When multiple results are returned by the roundup get or
+roundup find commands, they are printed one per line (default) or joined
+by commas (with the "``-c``" option).
+
+Where the command changes data, a login name/password is required. The
+login may be specified as either "``name``" or "``name:password``".
+
+- ``ROUNDUP_LOGIN`` environment variable
+- the "``-u``" command-line option
+
+If either the name or password is not supplied, they are obtained from
+the command-line.
+
+
+Using with the shell
+--------------------
+
+With version 0.6.0 or newer of roundup (which introduced support for
+multiple designators to display and the -d, -S and -s flags):
+
+To find all messages regarding chatting issues that contain the word
+"spam", for example, you could execute the following command from the
+directory where the database dumps its files::
+
+    shell% for issue in `roundup-admin -ds find issue status=chatting`; do
+    > grep -l spam `roundup-admin -ds ' ' get messages $issue`
+    > done
+    msg23
+    msg49
+    msg50
+    msg61
+    shell%
+
+Or, using the -dc option, this can be written as a single command::
+
+    shell% grep -l spam `roundup get messages \
+        \`roundup -dc find issue status=chatting\``
+    msg23
+    msg49
+    msg50
+    msg61
+    shell%
+
+You can also display issue contents::
+
+    shell% roundup-admin display `roundup-admin -dc get messages \
+               issue3,issue1`
+    files: []
+    inreplyto: None
+    recipients: []
+    author: 1
+    date: 2003-02-16.21:23:03
+    messageid: None
+    summary: jkdskldjf
+    files: []
+    inreplyto: None
+    recipients: []
+    author: 1
+    date: 2003-02-15.01:59:11
+    messageid: None
+    summary: jlkfjadsf    
+    
+or status::
+
+    shell% roundup-admin get name `/tools/roundup/bin/roundup-admin \
+          -dc -i /var/roundup/sysadmin get status issue3,issue1`
+    unread
+    deferred
+
+or status on a single line::
+
+    shell% echo `roundup-admin get name \`/tools/roundup/bin/roundup-admin \
+             -dc -i /var/roundup/sysadmin get status issue3,issue1\``
+    unread deferred
+
+which is the same as::
+
+    shell% roundup-admin -s get name `/tools/roundup/bin/roundup-admin \
+             -dc -i /var/roundup/sysadmin get status issue3,issue1`
+    unread deferred
+
+Also the tautological::
+
+   shell% roundup-admin get name \
+      `roundup-admin -dc get status \`roundup-admin -dc find issue \
+          status=chatting\``
+   chatting
+   chatting
+
+Remember the roundup commands that accept multiple designators accept
+them ',' separated so using '-dc' is almost always required.
+
