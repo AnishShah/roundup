@@ -2,7 +2,7 @@
 Roundup: an Issue-Tracking System for Knowledge Workers
 =======================================================
 
-Copyright (c) 2003 Richard Jones (richard@mechanicalcat.net)
+Copyright (c) 2003-2009 Richard Jones (richard@mechanicalcat.net)
 Copyright (c) 2002 eKit.com Inc (http://www.ekit.com/)
 Copyright (c) 2001 Bizar Software Pty Ltd (http://www.bizarsoftware.com.au/)
 
@@ -31,7 +31,7 @@ directory.
 Upgrading
 =========
 For upgrading instructions, please see upgrading.txt in the "doc" directory.
- 
+
 
 Usage and Other Information
 ===========================
@@ -39,6 +39,12 @@ See the index.txt file in the "doc" directory.
 The *.txt files in the "doc" directory are written in reStructedText. If
 you have rst2html installed (part of the docutils suite) you can convert
 these to HTML by running "make html" in the "doc" directory.
+
+
+For Developers
+==============
+To get started on development work, read the developers.txt file in
+the "doc" directory.
 
 
 License

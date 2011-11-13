@@ -1,12 +1,11 @@
-# $Id: back_sqlite.py,v 1.51 2007-06-21 07:35:50 schlatterbeck Exp $
-'''Implements a backend for SQLite.
+"""Implements a backend for SQLite.
 
 See https://pysqlite.sourceforge.net/ for pysqlite info
 
 
 NOTE: we use the rdbms_common table creation methods which define datatypes
 for the columns, but sqlite IGNORES these specifications.
-'''
+"""
 __docformat__ = 'restructuredtext'
 
 import os, base64, marshal, shutil, time, logging
@@ -15,8 +14,8 @@ from roundup import hyperdb, date, password
 from roundup.backends import rdbms_common
 sqlite_version = None
 try:
-    import sqlite
-    sqlite_version = 1
+    import sqlite3 as sqlite
+    sqlite_version = 3
 except ImportError:
     try:
         from pysqlite2 import dbapi2 as sqlite
@@ -25,8 +24,8 @@ except ImportError:
                 '- %s found'%sqlite.version)
         sqlite_version = 2
     except ImportError:
-        import sqlite3 as sqlite
-        sqlite_version = 3
+        import sqlite
+        sqlite_version = 1
 
 def db_exists(config):
     return os.path.exists(os.path.join(config.DATABASE, 'db'))
@@ -76,11 +75,11 @@ class Database(rdbms_common.Database):
 
     def sqlite_busy_handler(self, data, table, count):
         """invoked whenever SQLite tries to access a database that is locked"""
+        now = time.time()
         if count == 1:
-            # use a 30 second timeout (extraordinarily generous)
-            # for handling locked database
-            self._busy_handler_endtime = time.time() + 30
-        elif time.time() > self._busy_handler_endtime:
+            # Timeout for handling locked database (default 30s)
+            self._busy_handler_endtime = now + self.config.RDBMS_SQLITE_TIMEOUT
+        elif now > self._busy_handler_endtime:
             # timeout expired - no more retries
             return 0
         # sleep adaptively as retry count grows,
@@ -90,25 +89,32 @@ class Database(rdbms_common.Database):
         return 1
 
     def sql_open_connection(self):
-        '''Open a standard, non-autocommitting connection.
+        """Open a standard, non-autocommitting connection.
 
         pysqlite will automatically BEGIN TRANSACTION for us.
-        '''
+        """
         # make sure the database directory exists
         # database itself will be created by sqlite if needed
         if not os.path.isdir(self.config.DATABASE):
             os.makedirs(self.config.DATABASE)
 
         db = os.path.join(self.config.DATABASE, 'db')
-        logging.getLogger('hyperdb').info('open database %r'%db)
-        # set a 30 second timeout (extraordinarily generous) for handling
-        # locked database
+        logging.getLogger('roundup.hyperdb').info('open database %r'%db)
+        # set timeout (30 second default is extraordinarily generous)
+        # for handling locked database
         if sqlite_version == 1:
             conn = sqlite.connect(db=db)
             conn.db.sqlite_busy_handler(self.sqlite_busy_handler)
         else:
-            conn = sqlite.connect(db, timeout=30)
+            conn = sqlite.connect(db, timeout=self.config.RDBMS_SQLITE_TIMEOUT)
             conn.row_factory = sqlite.Row
+
+        # pysqlite2 / sqlite3 want us to store Unicode in the db but
+        # that's not what's been done historically and it's definitely
+        # not what the other backends do, so we'll stick with UTF-8
+        if sqlite_version in (2, 3):
+            conn.text_factory = str
+
         cursor = conn.cursor()
         return (conn, cursor)
 
@@ -154,7 +160,7 @@ class Database(rdbms_common.Database):
         # update existing tables to have the new actor column
         tables = self.database_schema['tables']
         for classname, spec in self.classes.items():
-            if tables.has_key(classname):
+            if classname in tables:
                 dbspec = tables[classname]
                 self.update_class(spec, dbspec, force=1, adding_v2=1)
                 # we've updated - don't try again
@@ -165,15 +171,14 @@ class Database(rdbms_common.Database):
         pass
 
     def update_class(self, spec, old_spec, force=0, adding_v2=0):
-        ''' Determine the differences between the current spec and the
+        """ Determine the differences between the current spec and the
             database version of the spec, and update where necessary.
 
             If 'force' is true, update the database anyway.
 
             SQLite doesn't have ALTER TABLE, so we have to copy and
             regenerate the tables with the new schema.
-        '''
-        new_has = spec.properties.has_key
+        """
         new_spec = spec.schema()
         new_spec[1].sort()
         old_spec[1].sort()
@@ -181,20 +186,20 @@ class Database(rdbms_common.Database):
             # no changes
             return 0
 
-        logging.getLogger('hyperdb').info('update_class %s'%spec.classname)
+        logging.getLogger('roundup.hyperdb').info(
+            'update_class %s'%spec.classname)
 
         # detect multilinks that have been removed, and drop their table
         old_has = {}
         for name, prop in old_spec[1]:
             old_has[name] = 1
-            if new_has(name) or not isinstance(prop, hyperdb.Multilink):
+            if name in spec.properties or not isinstance(prop, hyperdb.Multilink):
                 continue
             # it's a multilink, and it's been removed - drop the old
             # table. First drop indexes.
             self.drop_multilink_table_indexes(spec.classname, name)
             sql = 'drop table %s_%s'%(spec.classname, prop)
             self.sql(sql)
-        old_has = old_has.has_key
 
         # now figure how we populate the new table
         if adding_v2:
@@ -205,7 +210,7 @@ class Database(rdbms_common.Database):
         for propname,x in new_spec[1]:
             prop = properties[propname]
             if isinstance(prop, hyperdb.Multilink):
-                if not old_has(propname):
+                if propname not in old_has:
                     # we need to create the new table
                     self.create_multilink_table(spec, propname)
                 elif force:
@@ -222,11 +227,11 @@ class Database(rdbms_common.Database):
 
                     # re-create and populate the new table
                     self.create_multilink_table(spec, propname)
-                    sql = '''insert into %s (linkid, nodeid) values
-                        (%s, %s)'''%(tn, self.arg, self.arg)
+                    sql = """insert into %s (linkid, nodeid) values
+                        (%s, %s)"""%(tn, self.arg, self.arg)
                     for linkid, nodeid in rows:
                         self.sql(sql, (int(linkid), int(nodeid)))
-            elif old_has(propname):
+            elif propname in old_has:
                 # we copy this col over from the old table
                 fetch.append('_'+propname)
 
@@ -257,7 +262,7 @@ class Database(rdbms_common.Database):
                 elif isinstance(prop, hyperdb.Interval):
                     inscols.append('_'+propname)
                     inscols.append('__'+propname+'_int__')
-                elif old_has(propname):
+                elif propname in old_has:
                     # we copy this col over from the old table
                     inscols.append('_'+propname)
 
@@ -277,7 +282,7 @@ class Database(rdbms_common.Database):
                                 v = hyperdb.Interval(entry[name]).as_seconds()
                             except IndexError:
                                 v = None
-                        elif entry.has_key(name):
+                        elif name in entry:
                             v = hyperdb.Interval(entry[name]).as_seconds()
                         else:
                             v = None
@@ -286,7 +291,7 @@ class Database(rdbms_common.Database):
                             v = entry[name]
                         except IndexError:
                             v = None
-                    elif (sqlite_version == 1 and entry.has_key(name)):
+                    elif (sqlite_version == 1 and name in entry):
                         v = entry[name]
                     else:
                         v = None
@@ -296,9 +301,9 @@ class Database(rdbms_common.Database):
         return 1
 
     def sql_close(self):
-        ''' Squash any error caused by us already having closed the
+        """ Squash any error caused by us already having closed the
             connection.
-        '''
+        """
         try:
             self.conn.close()
         except sqlite.ProgrammingError, value:
@@ -306,9 +311,9 @@ class Database(rdbms_common.Database):
                 raise
 
     def sql_rollback(self):
-        ''' Squash any error caused by us having closed the connection (and
+        """ Squash any error caused by us having closed the connection (and
             therefore not having anything to roll back)
-        '''
+        """
         try:
             self.conn.rollback()
         except sqlite.ProgrammingError, value:
@@ -319,10 +324,10 @@ class Database(rdbms_common.Database):
         return '<roundlite 0x%x>'%id(self)
 
     def sql_commit(self, fail_ok=False):
-        ''' Actually commit to the database.
+        """ Actually commit to the database.
 
             Ignore errors if there's nothing to commit.
-        '''
+        """
         try:
             self.conn.commit()
         except sqlite.DatabaseError, error:
@@ -340,8 +345,8 @@ class Database(rdbms_common.Database):
 
     # old-skool id generation
     def newid(self, classname):
-        ''' Generate a new id for the given class
-        '''
+        """ Generate a new id for the given class
+        """
         # get the next ID
         sql = 'select num from ids where name=%s'%self.arg
         self.sql(sql, (classname, ))
@@ -356,10 +361,10 @@ class Database(rdbms_common.Database):
         return str(newid)
 
     def setid(self, classname, setid):
-        ''' Set the id counter: used during import of database
+        """ Set the id counter: used during import of database
 
         We add one to make it behave like the sequences in postgres.
-        '''
+        """
         sql = 'update ids set num=%s where name=%s'%(self.arg, self.arg)
         vals = (int(setid)+1, classname)
         self.sql(sql, vals)
@@ -378,8 +383,8 @@ class Database(rdbms_common.Database):
 
     if sqlite_version in (2,3):
         def load_journal(self, classname, cols, nodeid):
-            '''We need to turn the sqlite3.Row into a tuple so it can be
-            unpacked'''
+            """We need to turn the sqlite3.Row into a tuple so it can be
+            unpacked"""
             l = rdbms_common.Database.load_journal(self,
                 classname, cols, nodeid)
             cols = range(5)
@@ -388,11 +393,11 @@ class Database(rdbms_common.Database):
 class sqliteClass:
     def filter(self, search_matches, filterspec, sort=(None,None),
             group=(None,None)):
-        ''' If there's NO matches to a fetch, sqlite returns NULL
+        """ If there's NO matches to a fetch, sqlite returns NULL
             instead of nothing
-        '''
-        return filter(None, rdbms_common.Class.filter(self, search_matches,
-            filterspec, sort=sort, group=group))
+        """
+        return [f for f in rdbms_common.Class.filter(self, search_matches,
+            filterspec, sort=sort, group=group) if f]
 
 class Class(sqliteClass, rdbms_common.Class):
     pass

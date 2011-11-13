@@ -369,6 +369,9 @@ class FormParser:
                 if not value:
                     # ignore empty password values
                     continue
+                if d['confirm']:
+                    # ignore the "confirm" password value by itself
+                    continue
                 for key, d in matches:
                     if d['confirm'] and d['propname'] == propname:
                         confirm = form[key]
@@ -383,7 +386,7 @@ class FormParser:
                     raise FormError, self._('Password and confirmation text '
                         'do not match')
                 try:
-                    value = password.Password(value)
+                    value = password.Password(value, config=self.db.config)
                 except hyperdb.HyperdbValueError, msg:
                     raise FormError, msg
 
@@ -425,7 +428,9 @@ class FormParser:
                             if entry not in existing:
                                 existing.append(entry)
                     value = existing
-                    value.sort()
+                    # Sort the value in the same order used by
+                    # Multilink.from_raw.
+                    value.sort(lambda x, y: cmp(int(x),int(y)))
 
             elif value == '':
                 # other types should be None'd if there's no value
@@ -483,9 +488,13 @@ class FormParser:
                 except IndexError, message:
                     raise FormError(str(message))
 
-                # make sure the existing multilink is sorted
+                # make sure the existing multilink is sorted.  We must
+                # be sure to use the same sort order in all places,
+                # since we want to compare values with "=" or "!=".
+                # The canonical order (given in Multilink.from_raw) is
+                # by the numeric value of the IDs.
                 if isinstance(proptype, hyperdb.Multilink):
-                    existing.sort()
+                    existing.sort(lambda x, y: cmp(int(x),int(y)))
 
                 # "missing" existing values may not be None
                 if not existing:
@@ -563,11 +572,11 @@ class FormParser:
         # either have a non-empty content property or no property at all. In
         # the latter case, nothing will change.
         for (cn, id), props in all_props.items():
-            if id and id.startswith('-') and not props:
+            if id is not None and id.startswith('-') and not props:
                 # new item (any class) with no content - ignore
                 del all_props[(cn, id)]
             elif isinstance(self.db.classes[cn], hyperdb.FileClass):
-                if id and id.startswith('-'):
+                if id is not None and id.startswith('-'):
                     if not props.get('content', ''):
                         del all_props[(cn, id)]
                 elif props.has_key('content') and not props['content']:

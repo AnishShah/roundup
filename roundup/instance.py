@@ -15,19 +15,25 @@
 # BASIS, AND THERE IS NO OBLIGATION WHATSOEVER TO PROVIDE MAINTENANCE,
 # SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
 #
-# $Id: instance.py,v 1.37 2006-12-11 23:36:15 richard Exp $
 
-'''Tracker handling (open tracker).
+"""Top-level tracker interface.
 
-Backwards compatibility for the old-style "imported" trackers.
-'''
+Open a tracker with:
+
+    >>> from roundup import instance
+    >>> db = instance.open('path to tracker home')
+
+The "db" handle you get back is the tracker's hyperdb which has the interface
+described in `roundup.hyperdb.Database`.
+"""
 __docformat__ = 'restructuredtext'
 
 import os
 import sys
 from roundup import configuration, mailgw
-from roundup import hyperdb, backends
+from roundup import hyperdb, backends, actions
 from roundup.cgi import client, templating
+from roundup.cgi import actions as cgi_actions
 
 class Vars:
     def __init__(self, vars):
@@ -46,7 +52,12 @@ class Tracker:
         """
         self.tracker_home = tracker_home
         self.optimize = optimize
+        # if set, call schema_hook after executing schema.py will get
+        # same variables (in particular db) as schema.py main purpose is
+        # for regression tests
+        self.schema_hook = None
         self.config = configuration.CoreConfig(tracker_home)
+        self.actions = {}
         self.cgi_actions = {}
         self.templating_utils = {}
         self.load_interfaces()
@@ -75,8 +86,7 @@ class Tracker:
                 sys.path.remove(libdir)
 
     def get_backend_name(self):
-        o = __builtins__['open']
-        f = o(os.path.join(self.tracker_home, 'db', 'backend_name'))
+        f = file(os.path.join(self.config.DATABASE, 'backend_name'))
         name = f.readline().strip()
         f.close()
         return name
@@ -102,23 +112,27 @@ class Tracker:
             'db': backend.Database(self.config, name)
         }
 
+        libdir = os.path.join(self.tracker_home, 'lib')
+        if os.path.isdir(libdir):
+            sys.path.insert(1, libdir)
         if self.optimize:
             # execute preloaded schema object
             exec(self.schema, vars)
+            if callable (self.schema_hook):
+                self.schema_hook(**vars)
             # use preloaded detectors
             detectors = self.detectors
         else:
-            libdir = os.path.join(self.tracker_home, 'lib')
-            if os.path.isdir(libdir):
-                sys.path.insert(1, libdir)
             # execute the schema file
             self._load_python('schema.py', vars)
+            if callable (self.schema_hook):
+                self.schema_hook(**vars)
             # reload extensions and detectors
             for extension in self.get_extensions('extensions'):
                 extension(self)
             detectors = self.get_extensions('detectors')
-            if libdir in sys.path:
-                sys.path.remove(libdir)
+        if libdir in sys.path:
+            sys.path.remove(libdir)
         db = vars['db']
         # apply the detectors
         for detector in detectors:
@@ -127,6 +141,27 @@ class Tracker:
         # or this is the first time the database is opened,
         # do database upgrade checks
         if not (self.optimize and self.db_open):
+            # As a consistency check, ensure that every link property is
+            # pointing at a defined class.  Otherwise, the schema is
+            # internally inconsistent.  This is an important safety
+            # measure as it protects against an accidental schema change
+            # dropping a table while there are still links to the table;
+            # once the table has been dropped, there is no way to get it
+            # back, so it is important to drop it only if we are as sure
+            # as possible that it is no longer needed.
+            classes = db.getclasses()
+            for classname in classes:
+                cl = db.getclass(classname)
+                for propname, prop in cl.getprops().iteritems():
+                    if not isinstance(prop, (hyperdb.Link,
+                                             hyperdb.Multilink)):
+                        continue
+                    linkto = prop.classname
+                    if linkto not in classes:
+                        raise ValueError, \
+                            ("property %s.%s links to non-existent class %s"
+                             % (classname, propname, linkto))
+
             db.post_init()
             self.db_open = 1
         return db
@@ -182,7 +217,20 @@ class Tracker:
         return vars
 
     def registerAction(self, name, action):
-        self.cgi_actions[name] = action
+
+        # The logic here is this:
+        # * if `action` derives from actions.Action,
+        #   it is executable as a generic action.
+        # * if, moreover, it also derives from cgi.actions.Bridge,
+        #   it may in addition be called via CGI
+        # * in all other cases we register it as a CGI action, without
+        #   any check (for backward compatibility).
+        if issubclass(action, actions.Action):
+            self.actions[name] = action
+            if issubclass(action, cgi_actions.Bridge):
+                self.cgi_actions[name] = action
+        else:
+            self.cgi_actions[name] = action
 
     def registerUtil(self, name, function):
         self.templating_utils[name] = function

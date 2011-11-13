@@ -1,9 +1,11 @@
 #$Id: indexer_rdbms.py,v 1.18 2008-09-01 00:43:02 richard Exp $
-''' This implements the full-text indexer over two RDBMS tables. The first
+""" This implements the full-text indexer over two RDBMS tables. The first
 is a mapping of words to occurance IDs. The second maps the IDs to (Class,
 propname, itemid) instances.
-'''
-import re, sets
+"""
+import re
+# Python 2.3 ... 2.6 compatibility:
+from roundup.anypy.sets_ import set
 
 from roundup.backends.indexer_common import Indexer as IndexerBase
 
@@ -14,27 +16,27 @@ class Indexer(IndexerBase):
         self.reindex = 0
 
     def close(self):
-        '''close the indexing database'''
+        """close the indexing database"""
         # just nuke the circular reference
         self.db = None
 
     def save_index(self):
-        '''Save the changes to the index.'''
+        """Save the changes to the index."""
         # not necessary - the RDBMS connection will handle this for us
         pass
 
     def force_reindex(self):
-        '''Force a reindexing of the database.  This essentially
+        """Force a reindexing of the database.  This essentially
         empties the tables ids and index and sets a flag so
-        that the databases are reindexed'''
+        that the databases are reindexed"""
         self.reindex = 1
 
     def should_reindex(self):
-        '''returns True if the indexes need to be rebuilt'''
+        """returns True if the indexes need to be rebuilt"""
         return self.reindex
 
     def add_text(self, identifier, text, mime_type='text/plain'):
-        ''' "identifier" is  (classname, itemid, property) '''
+        """ "identifier" is  (classname, itemid, property) """
         if mime_type != 'text/plain':
             return
 
@@ -62,13 +64,15 @@ class Indexer(IndexerBase):
             self.db.cursor.execute(sql, (id, ))
 
         # ok, find all the unique words in the text
-        text = unicode(text, "utf-8", "replace").upper()
-        wordlist = [w.encode("utf-8", "replace")
-                for w in re.findall(r'(?u)\b\w{2,25}\b', text)]
-        words = sets.Set()
+        if not isinstance(text, unicode):
+            text = unicode(text, "utf-8", "replace")
+        text = text.upper()
+        wordlist = [w.encode("utf-8")
+                    for w in re.findall(r'(?u)\b\w{%d,%d}\b'
+                                        % (self.minlength, self.maxlength), text)]
+        words = set()
         for word in wordlist:
             if self.is_stopword(word): continue
-            if len(word) > 25: continue
             words.add(word)
 
         # for each word, add an entry in the db
@@ -77,14 +81,16 @@ class Indexer(IndexerBase):
         self.db.cursor.executemany(sql, words)
 
     def find(self, wordlist):
-        '''look up all the words in the wordlist.
+        """look up all the words in the wordlist.
         If none are found return an empty dictionary
         * more rules here
-        '''
+        """
         if not wordlist:
             return []
 
-        l = [word.upper() for word in wordlist if 26 > len(word) > 2]
+        l = [word.upper() for word in wordlist
+             if self.minlength <= len(word) <= self.maxlength]
+        l = [word for word in l if not self.is_stopword(word)]
 
         if not l:
             return []
@@ -123,7 +129,7 @@ class Indexer(IndexerBase):
             sql = sql%(' '.join(join_list), self.db.arg, ' '.join(match_list))
             self.db.cursor.execute(sql, l)
 
-            r = map(lambda x: x[0], self.db.cursor.fetchall())
+            r = [x[0] for x in self.db.cursor.fetchall()]
             if not r:
                 return []
 

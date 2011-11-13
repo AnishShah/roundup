@@ -1,25 +1,55 @@
 """Sending Roundup-specific mail over SMTP.
 """
 __docformat__ = 'restructuredtext'
-# $Id: mailer.py,v 1.22 2008-07-21 01:44:58 richard Exp $
 
-import time, quopri, os, socket, smtplib, re, sys, traceback
+import time, quopri, os, socket, smtplib, re, sys, traceback, email
 
 from cStringIO import StringIO
-from MimeWriter import MimeWriter
 
-from roundup.rfc2822 import encode_header
 from roundup import __version__
-from roundup.date import get_timezone
+from roundup.date import get_timezone, Date
+
+from email.Utils import formatdate, formataddr, specialsre, escapesre
+from email.Message import Message
+from email.Header import Header
+from email.MIMEBase import MIMEBase
+from email.MIMEText import MIMEText
+from email.MIMEMultipart import MIMEMultipart
 
 try:
-    from email.Utils import formatdate
+    import pyme, pyme.core
 except ImportError:
-    def formatdate():
-        return time.strftime("%a, %d %b %Y %H:%M:%S +0000", time.gmtime())
+    pyme = None
+
 
 class MessageSendError(RuntimeError):
     pass
+
+def encode_quopri(msg):
+    orig = msg.get_payload()
+    encdata = quopri.encodestring(orig)
+    msg.set_payload(encdata)
+    del msg['Content-Transfer-Encoding']
+    msg['Content-Transfer-Encoding'] = 'quoted-printable'
+
+def nice_sender_header(name, address, charset):
+    # construct an address header so it's as human-readable as possible
+    # even in the presence of a non-ASCII name part
+    if not name:
+        return address
+    try:
+        encname = name.encode('ASCII')
+    except UnicodeEncodeError:
+        # use Header to encode correctly.
+        encname = Header(name, charset=charset).encode()
+
+    # the important bits of formataddr()
+    if specialsre.search(encname):
+        encname = '"%s"'%escapesre.sub(r'\\\g<0>', encname)
+
+    # now format the header as a string - don't return a Header as anonymous
+    # headers play poorly with Messages (eg. won't get wrapped properly)
+    return '%s <%s>'%(encname, address)
 
 class Mailer:
     """Roundup-specific mail sending."""
@@ -41,52 +71,58 @@ class Mailer:
             os.environ['TZ'] = get_timezone(self.config.TIMEZONE).tzname(None)
             time.tzset()
 
-    def get_standard_message(self, to, subject, author=None):
-        '''Form a standard email message from Roundup.
-
+    def set_message_attributes(self, message, to, subject, author=None):
+        ''' Add attributes to a standard output message
         "to"      - recipients list
         "subject" - Subject
         "author"  - (name, address) tuple or None for admin email
 
         Subject and author are encoded using the EMAIL_CHARSET from the
         config (default UTF-8).
-
-        Returns a Message object and body part writer.
         '''
         # encode header values if they need to be
         charset = getattr(self.config, 'EMAIL_CHARSET', 'utf-8')
-        tracker_name = self.config.TRACKER_NAME
-        if charset != 'utf-8':
-            tracker = unicode(tracker_name, 'utf-8').encode(charset)
+        tracker_name = unicode(self.config.TRACKER_NAME, 'utf-8')
         if not author:
-            author = straddr((tracker_name, self.config.ADMIN_EMAIL))
-        else:
+            author = (tracker_name, self.config.ADMIN_EMAIL)
             name = author[0]
-            if charset != 'utf-8':
-                name = unicode(name, 'utf-8').encode(charset)
-            author = straddr((encode_header(name, charset), author[1]))
-
-        message = StringIO()
-        writer = MimeWriter(message)
-        writer.addheader('Subject', encode_header(subject, charset))
-        writer.addheader('To', ', '.join(to))
-        writer.addheader('From', author)
-        writer.addheader('Date', formatdate(localtime=True))
+        else:
+            name = unicode(author[0], 'utf-8')
+        author = nice_sender_header(name, author[1], charset)
+        try:
+            message['Subject'] = subject.encode('ascii')
+        except UnicodeError:
+            message['Subject'] = Header(subject, charset)
+        message['To'] = ', '.join(to)
+        message['From'] = author
+        message['Date'] = formatdate(localtime=True)
 
         # add a Precedence header so autoresponders ignore us
-        writer.addheader('Precedence', 'bulk')
+        message['Precedence'] = 'bulk'
 
         # Add a unique Roundup header to help filtering
-        writer.addheader('X-Roundup-Name', encode_header(tracker_name,
-            charset))
+        try:
+            message['X-Roundup-Name'] = tracker_name.encode('ascii')
+        except UnicodeError:
+            message['X-Roundup-Name'] = Header(tracker_name, charset)
+
         # and another one to avoid loops
-        writer.addheader('X-Roundup-Loop', 'hello')
+        message['X-Roundup-Loop'] = 'hello'
         # finally, an aid to debugging problems
-        writer.addheader('X-Roundup-Version', __version__)
+        message['X-Roundup-Version'] = __version__
 
-        writer.addheader('MIME-Version', '1.0')
+    def get_standard_message(self, multipart=False):
+        '''Form a standard email message from Roundup.
+        Returns a Message object.
+        '''
+        charset = getattr(self.config, 'EMAIL_CHARSET', 'utf-8')
+        if multipart:
+            message = MIMEMultipart()
+        else:
+            message = MIMEText("")
+            message.set_charset(charset)
 
-        return message, writer
+        return message
 
     def standard_message(self, to, subject, content, author=None):
         """Send a standard message.
@@ -96,18 +132,17 @@ class Mailer:
         - subject: the subject as a string.
         - content: the body of the message as a string.
         - author: the sender as a (name, address) tuple
+
+        All strings are assumed to be UTF-8 encoded.
         """
-        message, writer = self.get_standard_message(to, subject, author)
-
-        writer.addheader('Content-Transfer-Encoding', 'quoted-printable')
-        body = writer.startbody('text/plain; charset=utf-8')
-        content = StringIO(content)
-        quopri.encode(content, body, 0)
-
-        self.smtp_send(to, message)
+        message = self.get_standard_message()
+        self.set_message_attributes(message, to, subject, author)
+        message.set_payload(content)
+        encode_quopri(message)
+        self.smtp_send(to, message.as_string())
 
     def bounce_message(self, bounced_message, to, error,
-                       subject='Failed issue tracker submission'):
+                       subject='Failed issue tracker submission', crypt=False):
         """Bounce a message, attaching the failed submission.
 
         Arguments:
@@ -117,52 +152,97 @@ class Mailer:
           ERROR_MESSAGES_TO setting.
         - error: the reason of failure as a string.
         - subject: the subject as a string.
+        - crypt: require encryption with pgp for user -- applies only to
+          mail sent back to the user, not the dispatcher oder admin.
 
         """
+        crypt_to = None
+        if crypt:
+            crypt_to = to
+            to = None
         # see whether we should send to the dispatcher or not
         dispatcher_email = getattr(self.config, "DISPATCHER_EMAIL",
             getattr(self.config, "ADMIN_EMAIL"))
         error_messages_to = getattr(self.config, "ERROR_MESSAGES_TO", "user")
         if error_messages_to == "dispatcher":
             to = [dispatcher_email]
+            crypt = False
+            crypt_to = None
         elif error_messages_to == "both":
-            to.append(dispatcher_email)
+            if crypt:
+                to = [dispatcher_email]
+            else:
+                to.append(dispatcher_email)
 
-        message, writer = self.get_standard_message(to, subject)
+        message = self.get_standard_message(multipart=True)
 
-        part = writer.startmultipartbody('mixed')
-        part = writer.nextpart()
-        part.addheader('Content-Transfer-Encoding', 'quoted-printable')
-        body = part.startbody('text/plain; charset=utf-8')
-        body.write(quopri.encodestring ('\n'.join(error)))
+        # add the error text
+        part = MIMEText('\n'.join(error))
+        message.attach(part)
 
         # attach the original message to the returned message
-        part = writer.nextpart()
-        part.addheader('Content-Disposition', 'attachment')
-        part.addheader('Content-Description', 'Message you sent')
-        body = part.startbody('text/plain')
-
+        body = []
         for header in bounced_message.headers:
-            body.write(header)
-        body.write('\n')
+            body.append(header)
         try:
             bounced_message.rewindbody()
-        except IOError, message:
-            body.write("*** couldn't include message body: %s ***"
-                       % bounced_message)
+        except IOError, errmessage:
+            body.append("*** couldn't include message body: %s ***" %
+                errmessage)
         else:
-            body.write(bounced_message.fp.read())
+            body.append('\n')
+            body.append(bounced_message.fp.read())
+        part = MIMEText(''.join(body))
+        message.attach(part)
 
-        writer.lastpart()
-
-        try:
-            self.smtp_send(to, message)
-        except MessageSendError:
-            # squash mail sending errors when bouncing mail
-            # TODO this *could* be better, as we could notify admin of the
-            # problem (even though the vast majority of bounce errors are
-            # because of spam)
-            pass
+        if to:
+            # send
+            self.set_message_attributes(message, to, subject)
+            try:
+                self.smtp_send(to, message.as_string())
+            except MessageSendError:
+                # squash mail sending errors when bouncing mail
+                # TODO this *could* be better, as we could notify admin of the
+                # problem (even though the vast majority of bounce errors are
+                # because of spam)
+                pass
+        if crypt_to:
+            plain = pyme.core.Data(message.as_string())
+            cipher = pyme.core.Data()
+            ctx = pyme.core.Context()
+            ctx.set_armor(1)
+            keys = []
+            adrs = []
+            for adr in crypt_to:
+                ctx.op_keylist_start(adr, 0)
+                # only first key per email
+                k = ctx.op_keylist_next()
+                if k is not None:
+                    adrs.append(adr)
+                    keys.append(k)
+                ctx.op_keylist_end()
+            crypt_to = adrs
+        if crypt_to:
+            try:
+                ctx.op_encrypt(keys, 1, plain, cipher)
+                cipher.seek(0,0)
+                message=MIMEMultipart('encrypted', boundary=None,
+                    _subparts=None, protocol="application/pgp-encrypted")
+                part=MIMEBase('application', 'pgp-encrypted')
+                part.set_payload("Version: 1\r\n")
+                message.attach(part)
+                part=MIMEBase('application', 'octet-stream')
+                part.set_payload(cipher.read())
+                message.attach(part)
+            except pyme.GPGMEError:
+                crypt_to = None
+        if crypt_to:
+            self.set_message_attributes(message, crypt_to, subject)
+            try:
+                self.smtp_send(crypt_to, message.as_string())
+            except MessageSendError:
+                # ignore on error, see above.
+                pass
 
     def exception_message(self):
         '''Send a message to the admins with information about the latest
@@ -173,27 +253,33 @@ class Mailer:
         content = '\n'.join(traceback.format_exception(*sys.exc_info()))
         self.standard_message(to, subject, content)
 
-    def smtp_send(self, to, message):
+    def smtp_send(self, to, message, sender=None):
         """Send a message over SMTP, using roundup's config.
 
         Arguments:
         - to: a list of addresses usable by rfc822.parseaddr().
         - message: a StringIO instance with a full message.
+        - sender: if not 'None', the email address to use as the
+        envelope sender.  If 'None', the admin email is used.
         """
+
+        if not sender:
+            sender = self.config.ADMIN_EMAIL
         if self.debug:
-            # don't send - just write to a file
-            open(self.debug, 'a').write('FROM: %s\nTO: %s\n%s\n' %
-                                        (self.config.ADMIN_EMAIL,
-                                         ', '.join(to),
-                                         message.getvalue()))
+            # don't send - just write to a file, use unix from line so
+            # that resulting file can be openened in a mailer
+            fmt = '%a %b %m %H:%M:%S %Y'
+            unixfrm = 'From %s %s' % (sender, Date ('.').pretty (fmt))
+            open(self.debug, 'a').write('%s\nFROM: %s\nTO: %s\n%s\n\n' %
+                                        (unixfrm, sender,
+                                         ', '.join(to), message))
         else:
             # now try to send the message
             try:
                 # send the message as admin so bounces are sent there
                 # instead of to roundup
                 smtp = SMTPConnection(self.config)
-                smtp.sendmail(self.config.ADMIN_EMAIL, to,
-                              message.getvalue())
+                smtp.sendmail(sender, to, message)
             except socket.error, value:
                 raise MessageSendError("Error: couldn't send email: "
                                        "mailhost %s"%value)
@@ -209,6 +295,7 @@ class SMTPConnection(smtplib.SMTP):
 
         # start the TLS if requested
         if config["MAIL_TLS"]:
+            self.ehlo()
             self.starttls(config["MAIL_TLS_KEYFILE"],
                 config["MAIL_TLS_CERTFILE"])
 
@@ -216,21 +303,5 @@ class SMTPConnection(smtplib.SMTP):
         mailuser = config["MAIL_USERNAME"]
         if mailuser:
             self.login(mailuser, config["MAIL_PASSWORD"])
-
-# use the 'email' module, either imported, or our copied version
-try :
-    from email.Utils import formataddr as straddr
-except ImportError :
-    # code taken from the email package 2.4.3
-    def straddr(pair, specialsre = re.compile(r'[][\()<>@,:;".]'),
-            escapesre = re.compile(r'[][\()"]')):
-        name, address = pair
-        if name:
-            quotes = ''
-            if specialsre.search(name):
-                quotes = '"'
-            name = escapesre.sub(r'\\\g<0>', name)
-            return '%s%s%s <%s>' % (quotes, name, quotes, address)
-        return address
 
 # vim: set et sts=4 sw=4 :

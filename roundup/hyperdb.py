@@ -15,7 +15,6 @@
 # BASIS, AND THERE IS NO OBLIGATION WHATSOEVER TO PROVIDE MAINTENANCE,
 # SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
 #
-# $Id: hyperdb.py,v 1.132 2008-08-18 06:21:53 richard Exp $
 
 """Hyperdatabase implementation, especially field types.
 """
@@ -23,7 +22,8 @@ __docformat__ = 'restructuredtext'
 
 # standard python modules
 import os, re, shutil, weakref
-from sets import Set
+# Python 2.3 ... 2.6 compatibility:
+from roundup.anypy.sets_ import set
 
 # roundup modules
 import date, password
@@ -35,11 +35,15 @@ from roundup.i18n import _
 #
 class _Type(object):
     """A roundup property type."""
-    def __init__(self, required=False):
+    def __init__(self, required=False, default_value = None):
         self.required = required
+        self.__default_value = default_value
     def __repr__(self):
         ' more useful for dumps '
         return '<%s.%s>'%(self.__class__.__module__, self.__class__.__name__)
+    def get_default_value(self):
+        """The default value when creating a new instance of this property.""" 
+        return self.__default_value
     def sort_repr (self, cls, val, name):
         """Representation used for sorting. This should be a python
         built-in type, otherwise sorting will take ages. Note that
@@ -50,8 +54,8 @@ class _Type(object):
 
 class String(_Type):
     """An object designating a String property."""
-    def __init__(self, indexme='no', required=False):
-        super(String, self).__init__(required)
+    def __init__(self, indexme='no', required=False, default_value = ""):
+        super(String, self).__init__(required, default_value)
         self.indexme = indexme == 'yes'
     def from_raw(self, value, propname='', **kw):
         """fix the CRLF/CR -> LF stuff"""
@@ -72,24 +76,12 @@ class Password(_Type):
     def from_raw(self, value, **kw):
         if not value:
             return None
-        m = password.Password.pwre.match(value)
-        if m:
-            # password is being given to us encrypted
-            p = password.Password()
-            p.scheme = m.group(1)
-            if p.scheme not in 'SHA crypt plaintext'.split():
-                raise HyperdbValueError, \
-                        ('property %s: unknown encryption scheme %r') %\
-                        (kw['propname'], p.scheme)
-            p.password = m.group(2)
-            value = p
-        else:
-            try:
-                value = password.Password(value)
-            except password.PasswordValueError, message:
-                raise HyperdbValueError, \
-                        _('property %s: %s')%(kw['propname'], message)
-        return value
+        try:
+            return password.Password(encrypted=value, strict=True)
+        except password.PasswordValueError, message:
+            raise HyperdbValueError, \
+                    _('property %s: %s')%(kw['propname'], message)
+
     def sort_repr (self, cls, val, name):
         if not val:
             return val
@@ -97,8 +89,9 @@ class Password(_Type):
 
 class Date(_Type):
     """An object designating a Date property."""
-    def __init__(self, offset=None, required=False):
-        super(Date, self).__init__(required)
+    def __init__(self, offset=None, required=False, default_value = None):
+        super(Date, self).__init__(required = required,
+                                   default_value = default_value)
         self._offset = offset
     def offset(self, db):
         if self._offset is not None:
@@ -136,10 +129,11 @@ class Interval(_Type):
 class _Pointer(_Type):
     """An object designating a Pointer property that links or multilinks
     to a node in a specified class."""
-    def __init__(self, classname, do_journal='yes', required=False):
-        ''' Default is to journal link and unlink events
-        '''
-        super(_Pointer, self).__init__(required)
+    def __init__(self, classname, do_journal='yes', required=False,
+                 default_value = None):
+        """ Default is to journal link and unlink events
+        """
+        super(_Pointer, self).__init__(required, default_value)
         self.classname = classname
         self.do_journal = do_journal == 'yes'
     def __repr__(self):
@@ -175,6 +169,14 @@ class Multilink(_Pointer):
        "do_journal" indicates whether the linked-to nodes should have
                     'link' and 'unlink' events placed in their journal
     """
+
+    def __init__(self, classname, do_journal = 'yes', required = False):
+
+        super(Multilink, self).__init__(classname,
+                                        do_journal,
+                                        required = required,
+                                        default_value = [])        
+
     def from_raw(self, value, db, klass, propname, itemid, **kw):
         if not value:
             return []
@@ -194,7 +196,7 @@ class Multilink(_Pointer):
         # definitely in the new list (in case of e.g.
         # <propname>=A,+B, which should replace the old
         # list with A,B)
-        set = 1
+        do_set = 1
         newvalue = []
         for item in value:
             item = item.strip()
@@ -207,10 +209,10 @@ class Multilink(_Pointer):
             if item.startswith('-'):
                 remove = 1
                 item = item[1:]
-                set = 0
+                do_set = 0
             elif item.startswith('+'):
                 item = item[1:]
-                set = 0
+                do_set = 0
 
             # look up the value
             itemid = convertLinkValue(db, propname, self, item)
@@ -229,7 +231,7 @@ class Multilink(_Pointer):
 
         # that's it, set the new Multilink property value,
         # or overwrite it completely
-        if set:
+        if do_set:
             value = newvalue
         else:
             value = curvalue
@@ -273,29 +275,28 @@ class Number(_Type):
 class DesignatorError(ValueError):
     pass
 def splitDesignator(designator, dre=re.compile(r'([^\d]+)(\d+)')):
-    ''' Take a foo123 and return ('foo', 123)
-    '''
+    """ Take a foo123 and return ('foo', 123)
+    """
     m = dre.match(designator)
     if m is None:
         raise DesignatorError, _('"%s" not a node designator')%designator
     return m.group(1), m.group(2)
 
 class Proptree(object):
-    ''' Simple tree data structure for optimizing searching of
+    """ Simple tree data structure for optimizing searching of
     properties. Each node in the tree represents a roundup Class
     Property that has to be navigated for finding the given search
-    or sort properties. The sort_type attribute is used for
-    distinguishing nodes in the tree used for sorting or searching: If
-    it is 0 for a node, that node is not used for sorting. If it is 1,
-    it is used for both, sorting and searching. If it is 2 it is used
-    for sorting only.
+    or sort properties. The need_for attribute is used for
+    distinguishing nodes in the tree used for sorting, searching or
+    retrieval: The attribute is a dictionary containing one or several
+    of the values 'sort', 'search', 'retrieve'.
 
     The Proptree is also used for transitively searching attributes for
     backends that do not support transitive search (e.g. anydbm). The
     _val attribute with set_val is used for this.
-    '''
+    """
 
-    def __init__(self, db, cls, name, props, parent = None):
+    def __init__(self, db, cls, name, props, parent=None, retr=False):
         self.db = db
         self.name = name
         self.props = props
@@ -308,7 +309,7 @@ class Proptree(object):
         self.children = []
         self.sortattr = []
         self.propdict = {}
-        self.sort_type = 0
+        self.need_for = {'search' : True}
         self.sort_direction = None
         self.sort_ids = None
         self.sort_ids_needed = False
@@ -317,6 +318,7 @@ class Proptree(object):
         self.tree_sort_done = False
         self.propclass = None
         self.orderby = []
+        self.sql_idx = None # index of retrieved column in sql result
         if parent:
             self.root = parent.root
             self.depth = parent.depth + 1
@@ -324,7 +326,7 @@ class Proptree(object):
             self.root = self
             self.seqno = 1
             self.depth = 0
-            self.sort_type = 1
+            self.need_for['sort'] = True
         self.id = self.root.seqno
         self.root.seqno += 1
         if self.cls:
@@ -332,15 +334,18 @@ class Proptree(object):
             self.uniqname = '%s%s' % (self.cls.classname, self.id)
         if not self.parent:
             self.uniqname = self.cls.classname
+        if retr:
+            self.append_retr_props()
 
-    def append(self, name, sort_type = 0):
+    def append(self, name, need_for='search', retr=False):
         """Append a property to self.children. Will create a new
         propclass for the child.
         """
         if name in self.propdict:
             pt = self.propdict[name]
-            if sort_type and not pt.sort_type:
-                pt.sort_type = 1
+            pt.need_for[need_for] = True
+            if retr and isinstance(pt.propclass, Link):
+                pt.append_retr_props()
             return pt
         propclass = self.props[name]
         cls = None
@@ -349,15 +354,24 @@ class Proptree(object):
             cls = self.db.getclass(propclass.classname)
             props = cls.getprops()
         child = self.__class__(self.db, cls, name, props, parent = self)
-        child.sort_type = sort_type
+        child.need_for = {need_for : True}
         child.propclass = propclass
         self.children.append(child)
         self.propdict[name] = child
+        if retr and isinstance(child.propclass, Link):
+            child.append_retr_props()
         return child
+
+    def append_retr_props(self):
+        """Append properties for retrieval."""
+        for name, prop in self.cls.getprops(protected=1).iteritems():
+            if isinstance(prop, Multilink):
+                continue
+            self.append(name, need_for='retrieve')
 
     def compute_sort_done(self, mlseen=False):
         """ Recursively check if attribute is needed for sorting
-        (self.sort_type > 0) or all children have tree_sort_done set and
+        ('sort' in self.need_for) or all children have tree_sort_done set and
         sort_ids_needed unset: set self.tree_sort_done if one of the conditions
         holds. Also remove sort_ids_needed recursively once having seen a
         Multilink.
@@ -371,7 +385,7 @@ class Proptree(object):
             p.compute_sort_done(mlseen)
             if not p.tree_sort_done:
                 self.tree_sort_done = False
-        if not self.sort_type:
+        if 'sort' not in self.need_for:
             self.tree_sort_done = True
         if mlseen:
             self.tree_sort_done = False
@@ -389,7 +403,7 @@ class Proptree(object):
         """
         filterspec = {}
         for p in self.children:
-            if p.sort_type < 2:
+            if 'search' in p.need_for:
                 if p.children:
                     p.search(sort = False)
                 filterspec[p.name] = p.val
@@ -413,7 +427,7 @@ class Proptree(object):
         too.
         """
         return [p for p in self.children
-                if p.sort_type > 0 and (intermediate or p.sort_direction)]
+                if 'sort' in p.need_for and (intermediate or p.sort_direction)]
 
     def __iter__(self):
         """ Yield nodes in depth-first order -- visited nodes first """
@@ -488,7 +502,7 @@ class Proptree(object):
             v = self._val
             if not isinstance(self._val, type([])):
                 v = [self._val]
-            vals = Set(v)
+            vals = set(v)
             vals.intersection_update(val)
             self._val = [v for v in vals]
         else:
@@ -534,7 +548,6 @@ class Proptree(object):
                 curdir = sa.sort_direction
             idx += 1
         sortattr.append (val)
-        #print >> sys.stderr, "\nsortattr", sortattr
         sortattr = zip (*sortattr)
         for dir, i in reversed(zip(directions, dir_idx)):
             rev = dir == '-'
@@ -565,11 +578,11 @@ class Proptree(object):
 # the base Database class
 #
 class DatabaseError(ValueError):
-    '''Error to be raised when there is some problem in the database code
-    '''
+    """Error to be raised when there is some problem in the database code
+    """
     pass
 class Database:
-    '''A database for storing records containing flexible data types.
+    """A database for storing records containing flexible data types.
 
 This class defines a hyperdatabase storage layer, which the Classes use to
 store their data.
@@ -592,7 +605,7 @@ Implementation
 
 All methods except __repr__ must be implemented by a concrete backend Database.
 
-'''
+"""
 
     # flag to set on retired entries
     RETIRED_FLAG = '__hyperdb_retired'
@@ -634,8 +647,8 @@ All methods except __repr__ must be implemented by a concrete backend Database.
         raise NotImplementedError
 
     def addclass(self, cl):
-        '''Add a Class to the hyperdatabase.
-        '''
+        """Add a Class to the hyperdatabase.
+        """
         raise NotImplementedError
 
     def getclasses(self):
@@ -650,14 +663,14 @@ All methods except __repr__ must be implemented by a concrete backend Database.
         raise NotImplementedError
 
     def clear(self):
-        '''Delete all database contents.
-        '''
+        """Delete all database contents.
+        """
         raise NotImplementedError
 
     def getclassdb(self, classname, mode='r'):
-        '''Obtain a connection to the class db that will be used for
+        """Obtain a connection to the class db that will be used for
            multiple actions.
-        '''
+        """
         raise NotImplementedError
 
     def addnode(self, classname, nodeid, node):
@@ -666,73 +679,73 @@ All methods except __repr__ must be implemented by a concrete backend Database.
         raise NotImplementedError
 
     def serialise(self, classname, node):
-        '''Copy the node contents, converting non-marshallable data into
+        """Copy the node contents, converting non-marshallable data into
            marshallable data.
-        '''
+        """
         return node
 
     def setnode(self, classname, nodeid, node):
-        '''Change the specified node.
-        '''
+        """Change the specified node.
+        """
         raise NotImplementedError
 
     def unserialise(self, classname, node):
-        '''Decode the marshalled node data
-        '''
+        """Decode the marshalled node data
+        """
         return node
 
     def getnode(self, classname, nodeid):
-        '''Get a node from the database.
+        """Get a node from the database.
 
         'cache' exists for backwards compatibility, and is not used.
-        '''
+        """
         raise NotImplementedError
 
     def hasnode(self, classname, nodeid):
-        '''Determine if the database has a given node.
-        '''
+        """Determine if the database has a given node.
+        """
         raise NotImplementedError
 
     def countnodes(self, classname):
-        '''Count the number of nodes that exist for a particular Class.
-        '''
+        """Count the number of nodes that exist for a particular Class.
+        """
         raise NotImplementedError
 
     def storefile(self, classname, nodeid, property, content):
-        '''Store the content of the file in the database.
+        """Store the content of the file in the database.
 
            The property may be None, in which case the filename does not
            indicate which property is being saved.
-        '''
+        """
         raise NotImplementedError
 
     def getfile(self, classname, nodeid, property):
-        '''Store the content of the file in the database.
-        '''
+        """Get the content of the file in the database.
+        """
         raise NotImplementedError
 
     def addjournal(self, classname, nodeid, action, params):
-        ''' Journal the Action
+        """ Journal the Action
         'action' may be:
 
             'create' or 'set' -- 'params' is a dictionary of property values
             'link' or 'unlink' -- 'params' is (classname, nodeid, propname)
             'retire' -- 'params' is None
-        '''
+        """
         raise NotImplementedError
 
     def getjournal(self, classname, nodeid):
-        ''' get the journal for id
-        '''
+        """ get the journal for id
+        """
         raise NotImplementedError
 
     def pack(self, pack_before):
-        ''' pack the database
-        '''
+        """ pack the database
+        """
         raise NotImplementedError
 
     def commit(self):
-        ''' Commit the current transactions.
+        """ Commit the current transactions.
 
         Save all data changed since the database was opened or since the
         last commit() or rollback().
@@ -742,15 +755,15 @@ All methods except __repr__ must be implemented by a concrete backend Database.
         database. We don't care if there's a concurrency issue there.
 
         The only backend this seems to affect is postgres.
-        '''
+        """
         raise NotImplementedError
 
     def rollback(self):
-        ''' Reverse all actions from the current transaction.
+        """ Reverse all actions from the current transaction.
 
         Undo all the changes made since the database was opened or the last
         commit() or rollback() was performed.
-        '''
+        """
         raise NotImplementedError
 
     def close(self):
@@ -759,6 +772,16 @@ All methods except __repr__ must be implemented by a concrete backend Database.
         This method must be called at the end of processing.
 
         """
+
+def iter_roles(roles):
+    ''' handle the text processing of turning the roles list
+        into something python can use more easily
+    '''
+    if not roles or not roles.strip():
+        raise StopIteration, "Empty roles given"
+    for role in [x.lower().strip() for x in roles.split(',')]:
+        yield role
+
 
 #
 # The base Class class
@@ -798,8 +821,8 @@ class Class:
         self.reactors = dict([(a, PrioList()) for a in actions])
 
     def __repr__(self):
-        '''Slightly more useful representation
-        '''
+        """Slightly more useful representation
+        """
         return '<hyperdb.Class "%s">'%self.classname
 
     # Editing nodes:
@@ -837,18 +860,18 @@ class Class:
 
     # not in spec
     def getnode(self, nodeid):
-        ''' Return a convenience wrapper for the node.
+        """ Return a convenience wrapper for the node.
 
         'nodeid' must be the id of an existing node of this class or an
         IndexError is raised.
 
         'cache' exists for backwards compatibility, and is not used.
-        '''
+        """
         return Node(self, nodeid)
 
     def getnodeids(self, retired=None):
-        '''Retrieve all the ids of the nodes for a particular Class.
-        '''
+        """Retrieve all the ids of the nodes for a particular Class.
+        """
         raise NotImplementedError
 
     def set(self, nodeid, **propvalues):
@@ -883,15 +906,15 @@ class Class:
         raise NotImplementedError
 
     def restore(self, nodeid):
-        '''Restpre a retired node.
+        """Restpre a retired node.
 
         Make node available for all operations like it was before retirement.
-        '''
+        """
         raise NotImplementedError
 
     def is_retired(self, nodeid):
-        '''Return true if the node is rerired
-        '''
+        """Return true if the node is rerired
+        """
         raise NotImplementedError
 
     def destroy(self, nodeid):
@@ -928,12 +951,14 @@ class Class:
         'date' is a Timestamp object specifying the time of the change and
         'tag' is the journaltag specified when the database was opened.
         """
-        raise NotImplementedError
+        if not self.do_journal:
+            raise ValueError('Journalling is disabled for this class')
+        return self.db.getjournal(self.classname, nodeid)
 
     # Locating nodes:
     def hasnode(self, nodeid):
-        '''Determine if the given nodeid actually exists
-        '''
+        """Determine if the given nodeid actually exists
+        """
         raise NotImplementedError
 
     def setkey(self, propname):
@@ -1045,27 +1070,40 @@ class Class:
         """
         raise NotImplementedError
 
-    def _proptree(self, filterspec, sortattr=[]):
+    def _proptree(self, filterspec, sortattr=[], retr=False):
         """Build a tree of all transitive properties in the given
         filterspec.
+        If we retrieve (retr is True) linked items we don't follow
+        across multilinks. We also don't follow if the searched value
+        can contain NULL values.
         """
-        proptree = Proptree(self.db, self, '', self.getprops())
+        proptree = Proptree(self.db, self, '', self.getprops(), retr=retr)
         for key, v in filterspec.iteritems():
             keys = key.split('.')
             p = proptree
+            mlseen = False
             for k in keys:
-                p = p.append(k)
+                if isinstance (p.propclass, Multilink):
+                    mlseen = True
+                isnull = v == '-1' or v is None
+                nullin = isinstance(v, type([])) and ('-1' in v or None in v)
+                r = retr and not mlseen and not isnull and not nullin
+                p = p.append(k, retr=r)
             p.val = v
         multilinks = {}
         for s in sortattr:
             keys = s[1].split('.')
             p = proptree
+            mlseen = False
             for k in keys:
-                p = p.append(k, sort_type = 2)
+                if isinstance (p.propclass, Multilink):
+                    mlseen = True
+                r = retr and not mlseen
+                p = p.append(k, need_for='sort', retr=r)
                 if isinstance (p.propclass, Multilink):
                     multilinks[p] = True
             if p.cls:
-                p = p.append(p.cls.orderprop(), sort_type = 2)
+                p = p.append(p.cls.orderprop(), need_for='sort')
             if p.sort_direction: # if an orderprop is also specified explicitly
                 continue
             p.sort_direction = s[0]
@@ -1091,7 +1129,7 @@ class Class:
         for k in propname_path.split('.'):
             try:
                 prop = props[k]
-            except KeyError, TypeError:
+            except (KeyError, TypeError):
                 return default
             cl = getattr(prop, 'classname', None)
             props = None
@@ -1129,7 +1167,7 @@ class Class:
         backward-compatibility reasons a single (dir, prop) tuple is
         also allowed.
 
-        "search_matches" is {nodeid: marker}
+        "search_matches" is a container type
 
         The filter must match all properties specificed. If the property
         value to match is a list:
@@ -1148,13 +1186,20 @@ class Class:
         This implements a non-optimized version of Transitive search
         using _filter implemented in a backend class. A more efficient
         version can be implemented in the individual backends -- e.g.,
-        an SQL backen will want to create a single SQL statement and
+        an SQL backend will want to create a single SQL statement and
         override the filter method instead of implementing _filter.
         """
         sortattr = self._sortattr(sort = sort, group = group)
         proptree = self._proptree(filterspec, sortattr)
         proptree.search(search_matches)
         return proptree.sort()
+
+    # non-optimized filter_iter, a backend may chose to implement a
+    # better version that provides a real iterator that pre-fills the
+    # cache for each id returned. Note that the filter_iter doesn't
+    # promise to correctly sort by multilink (which isn't sane to do
+    # anyway).
+    filter_iter = filter
 
     def count(self):
         """Get the number of nodes in this class.
@@ -1228,13 +1273,90 @@ class Class:
         propnames.sort()
         return propnames
 
+    def import_journals(self, entries):
+        """Import a class's journal.
+
+        Uses setjournal() to set the journal for each item.
+        Strategy for import: Sort first by id, then import journals for
+        each id, this way the memory footprint is a lot smaller than the
+        initial implementation which stored everything in a big hash by
+        id and then proceeded to import journals for each id."""
+        properties = self.getprops()
+        a = []
+        for l in entries:
+            # first element in sorted list is the (numeric) id
+            # in python2.4 and up we would use sorted with a key...
+            a.append ((int (l [0].strip ("'")), l))
+        a.sort ()
+
+
+        last = 0
+        r = []
+        for n, l in a:
+            nodeid, jdate, user, action, params = map(eval, l)
+            assert (str(n) == nodeid)
+            if n != last:
+                if r:
+                    self.db.setjournal(self.classname, str(last), r)
+                last = n
+                r = []
+
+            if action == 'set':
+                for propname, value in params.iteritems():
+                    prop = properties[propname]
+                    if value is None:
+                        pass
+                    elif isinstance(prop, Date):
+                        value = date.Date(value)
+                    elif isinstance(prop, Interval):
+                        value = date.Interval(value)
+                    elif isinstance(prop, Password):
+                        value = password.JournalPassword(encrypted=value)
+                    params[propname] = value
+            elif action == 'create' and params:
+                # old tracker with data stored in the create!
+                params = {}
+            r.append((nodeid, date.Date(jdate), user, action, params))
+        if r:
+            self.db.setjournal(self.classname, nodeid, r)
+
+    #
+    # convenience methods
+    #
+    def get_roles(self, nodeid):
+        """Return iterator for all roles for this nodeid.
+
+           Yields string-processed roles.
+           This method can be overridden to provide a hook where we can
+           insert other permission models (e.g. get roles from database)
+           In standard schemas only a user has a roles property but
+           this may be different in customized schemas.
+           Note that this is the *central place* where role
+           processing happens!
+        """
+        node = self.db.getnode(self.classname, nodeid)
+        return iter_roles(node['roles'])
+
+    def has_role(self, nodeid, *roles):
+        '''See if this node has any roles that appear in roles.
+
+           For convenience reasons we take a list.
+           In standard schemas only a user has a roles property but
+           this may be different in customized schemas.
+        '''
+        roles = dict.fromkeys ([r.strip().lower() for r in roles])
+        for role in self.get_roles(nodeid):
+            if role in roles:
+                return True
+        return False
+
 
 class HyperdbValueError(ValueError):
-    ''' Error converting a raw value into a Hyperdb value '''
+    """ Error converting a raw value into a Hyperdb value """
     pass
 
 def convertLinkValue(db, propname, prop, value, idre=re.compile('^\d+$')):
-    ''' Convert the link value (may be id or key value) to an id value. '''
+    """ Convert the link value (may be id or key value) to an id value. """
     linkcl = db.classes[prop.classname]
     if not idre.match(value):
         if linkcl.getkey():
@@ -1259,14 +1381,14 @@ def fixNewlines(text):
     return text.replace('\r', '\n')
 
 def rawToHyperdb(db, klass, itemid, propname, value, **kw):
-    ''' Convert the raw (user-input) value to a hyperdb-storable value. The
+    """ Convert the raw (user-input) value to a hyperdb-storable value. The
         value is for the "propname" property on itemid (may be None for a
         new item) of "klass" in "db".
 
         The value is usually a string, but in the case of multilink inputs
         it may be either a list of strings or a string with comma-separated
         values.
-    '''
+    """
     properties = klass.getprops()
 
     # ensure it's a valid property name
@@ -1288,21 +1410,21 @@ def rawToHyperdb(db, klass, itemid, propname, value, **kw):
     return value
 
 class FileClass:
-    ''' A class that requires the "content" property and stores it on
+    """ A class that requires the "content" property and stores it on
         disk.
-    '''
+    """
     default_mime_type = 'text/plain'
 
     def __init__(self, db, classname, **properties):
-        '''The newly-created class automatically includes the "content"
+        """The newly-created class automatically includes the "content"
         property.
-        '''
+        """
         if not properties.has_key('content'):
             properties['content'] = String(indexme='yes')
 
     def export_propnames(self):
-        ''' Don't export the "content" property
-        '''
+        """ Don't export the "content" property
+        """
         propnames = self.getprops().keys()
         propnames.remove('content')
         propnames.sort()
@@ -1313,8 +1435,8 @@ class FileClass:
         return os.path.join(dirname, self.classname+'-files', subdir_filename)
 
     def export_files(self, dirname, nodeid):
-        ''' Export the "content" property as a file, not csv column
-        '''
+        """ Export the "content" property as a file, not csv column
+        """
         source = self.db.filename(self.classname, nodeid)
 
         dest = self.exportFilename(dirname, nodeid)
@@ -1322,8 +1444,8 @@ class FileClass:
         shutil.copyfile(source, dest)
 
     def import_files(self, dirname, nodeid):
-        ''' Import the "content" property as a file
-        '''
+        """ Import the "content" property as a file
+        """
         source = self.exportFilename(dirname, nodeid)
 
         dest = self.db.filename(self.classname, nodeid, create=1)
@@ -1341,8 +1463,8 @@ class FileClass:
                 self.get(nodeid, 'content'), mime_type)
 
 class Node:
-    ''' A convenience wrapper for the given node
-    '''
+    """ A convenience wrapper for the given node
+    """
     def __init__(self, cl, nodeid, cache=1):
         self.__dict__['cl'] = cl
         self.__dict__['nodeid'] = nodeid
@@ -1392,8 +1514,8 @@ class Node:
 
 
 def Choice(name, db, *options):
-    '''Quick helper to create a simple class with choices
-    '''
+    """Quick helper to create a simple class with choices
+    """
     cl = Class(db, name, name=String(), order=String())
     for i in range(len(options)):
         cl.create(name=options[i], order=i)

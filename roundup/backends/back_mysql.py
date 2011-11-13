@@ -1,4 +1,3 @@
-#$Id: back_mysql.py,v 1.75 2008-02-27 08:32:50 richard Exp $
 #
 # Copyright (c) 2003 Martynas Sklyzmantas, Andrey Lebedev <andrey@micro.lt>
 #
@@ -67,11 +66,10 @@ def db_nuke(config):
             # stupid MySQL bug requires us to drop all the tables first
             for table in tables:
                 command = 'DROP TABLE `%s`'%table[0]
-                if __debug__:
-                    logging.getLogger('hyperdb').debug(command)
+                logging.debug(command)
                 cursor.execute(command)
             command = "DROP DATABASE %s"%config.RDBMS_NAME
-            logging.getLogger('hyperdb').info(command)
+            logging.info(command)
             cursor.execute(command)
             conn.commit()
         conn.close()
@@ -85,7 +83,7 @@ def db_create(config):
     conn = MySQLdb.connect(**kwargs)
     cursor = conn.cursor()
     command = "CREATE DATABASE %s"%config.RDBMS_NAME
-    logging.getLogger('hyperdb').info(command)
+    logging.info(command)
     cursor.execute(command)
     conn.commit()
     conn.close()
@@ -140,7 +138,7 @@ class Database(Database):
 
     def sql_open_connection(self):
         kwargs = connection_dict(self.config, 'db')
-        logging.getLogger('hyperdb').info('open database %r'%(kwargs['db'],))
+        self.log_info('open database %r'%(kwargs['db'],))
         try:
             conn = MySQLdb.connect(**kwargs)
         except MySQLdb.OperationalError, message:
@@ -299,7 +297,7 @@ class Database(Database):
                     # convert to new MySQL data type
                     prop = properties[name]
                     if v is not None:
-                        e = self.hyperdb_to_sql_value[prop.__class__](v)
+                        e = self.to_sql_value(prop.__class__)(v)
                     else:
                         e = None
                     l.append(e)
@@ -351,7 +349,7 @@ class Database(Database):
 
             # re-create journal table
             self.create_journal_table(klass)
-            dc = self.hyperdb_to_sql_value[hyperdb.Date]
+            dc = self.to_sql_value(hyperdb.Date)
             for nodeid, journaldate, journaltag, action, params in olddata:
                 self.save_journal(cn, cols, nodeid, dc(journaldate),
                     journaltag, action, params)
@@ -544,7 +542,7 @@ class Database(Database):
     def sql_commit(self, fail_ok=False):
         ''' Actually commit to the database.
         '''
-        logging.getLogger('hyperdb').info('commit')
+        self.log_info('commit')
 
         # MySQL commits don't seem to ever fail, the latest update winning.
         # makes you wonder why they have transactions...
@@ -558,7 +556,7 @@ class Database(Database):
         self.sql("START TRANSACTION")
 
     def sql_close(self):
-        logging.getLogger('hyperdb').info('close')
+        self.log_info('close')
         try:
             self.conn.close()
         except MySQLdb.ProgrammingError, message:
@@ -566,6 +564,11 @@ class Database(Database):
                 raise
 
 class MysqlClass:
+
+    def supports_subselects(self):
+        # TODO: AFAIK its version dependent for MySQL
+        return False
+
     def _subselect(self, classname, multilink_table):
         ''' "I can't believe it's not a toy RDBMS"
            see, even toy RDBMSes like gadfly and sqlite can do sub-selects...
@@ -573,6 +576,70 @@ class MysqlClass:
         self.db.sql('select nodeid from %s'%multilink_table)
         s = ','.join([x[0] for x in self.db.sql_fetchall()])
         return '_%s.id not in (%s)'%(classname, s)
+
+    def create_inner(self, **propvalues):
+        try:
+            return rdbms_common.Class.create_inner(self, **propvalues)
+        except MySQLdb.IntegrityError, e:
+            self._handle_integrity_error(e, propvalues)
+
+    def set_inner(self, nodeid, **propvalues):
+        try:
+            return rdbms_common.Class.set_inner(self, nodeid,
+                                                **propvalues)
+        except MySQLdb.IntegrityError, e:
+            self._handle_integrity_error(e, propvalues)
+
+    def _handle_integrity_error(self, e, propvalues):
+        ''' Handle a MySQL IntegrityError.
+
+        If the error is recognized, then it may be converted into an
+        alternative exception.  Otherwise, it is raised unchanged from
+        this function.'''
+
+        # There are checks in create_inner/set_inner to see if a node
+        # is being created with the same key as an existing node.
+        # But, there is a race condition -- we may pass those checks,
+        # only to find out that a parallel session has created the
+        # node by by the time we actually issue the SQL command to
+        # create the node.  Fortunately, MySQL gives us a unique error
+        # code for this situation, so we can detect it here and handle
+        # it appropriately.
+        # 
+        # The details of the race condition are as follows, where
+        # "X" is a classname, and the term "thread" is meant to
+        # refer generically to both threads and processes:
+        #
+        # Thread A                    Thread B
+        # --------                    --------
+        #                             read table for X
+        # create new X object
+        # commit
+        #                             create new X object
+        #
+        # In Thread B, the check in create_inner does not notice that
+        # the new X object is a duplicate of that committed in Thread
+        # A because MySQL's default "consistent nonlocking read"
+        # behavior means that Thread B sees a snapshot of the database
+        # at the point at which its transaction began -- which was
+        # before Thread A created the object.  However, the attempt
+        # to *write* to the table for X, creating a duplicate entry,
+        # triggers an error at the point of the write.
+        #
+        # If both A and B's transaction begins with creating a new X
+        # object, then this bug cannot occur because creating the
+        # object requires getting a new ID, and newid() locks the id
+        # table until the transaction is committed or rolledback.  So,
+        # B will block until A's commit is complete, and will not
+        # actually get its snapshot until A's transaction completes.
+        # But, if the transaction has begun prior to calling newid,
+        # then the snapshot has already been established.
+        if e[0] == ER.DUP_ENTRY:
+            key = propvalues[self.key]
+            raise ValueError, 'node with key "%s" exists' % key
+        # We don't know what this exception is; reraise it.
+        raise
+        
 
 class Class(MysqlClass, rdbms_common.Class):
     pass

@@ -81,7 +81,7 @@ class Indexer(IndexerBase):
         self.load_index()
 
         # remove old entries for this identifier
-        if self.files.has_key(identifier):
+        if identifier in self.files:
             self.purge_entry(identifier)
 
         # split into words
@@ -99,15 +99,15 @@ class Indexer(IndexerBase):
         for word in words:
             if self.is_stopword(word):
                 continue
-            if filedict.has_key(word):
+            if word in filedict:
                 filedict[word] = filedict[word]+1
             else:
                 filedict[word] = 1
 
         # now add to the totals
-        for word in filedict.keys():
+        for word in filedict:
             # each word has a dict of {identifier: count}
-            if self.words.has_key(word):
+            if word in self.words:
                 entry = self.words[word]
             else:
                 # new word
@@ -135,14 +135,12 @@ class Indexer(IndexerBase):
         # case insensitive
         text = str(text).upper()
 
-        # Split the raw text, losing anything longer than 25 characters
-        # since that'll be gibberish (encoded text or somesuch) or shorter
-        # than 3 characters since those short words appear all over the
-        # place
-        return re.findall(r'\b\w{2,25}\b', text)
+        # Split the raw text
+        return re.findall(r'\b\w{%d,%d}\b' % (self.minlength, self.maxlength),
+                          text)
 
-    # we override this to ignore not 2 < word < 25 and also to fix a bug -
-    # the (fail) case.
+    # we override this to ignore too short and too long words
+    # and also to fix a bug - the (fail) case.
     def find(self, wordlist):
         '''Locate files that match ALL the words in wordlist
         '''
@@ -152,28 +150,30 @@ class Indexer(IndexerBase):
         entries = {}
         hits = None
         for word in wordlist:
-            if not 2 < len(word) < 25:
+            if not self.minlength <= len(word) <= self.maxlength:
                 # word outside the bounds of what we index - ignore
                 continue
             word = word.upper()
+            if self.is_stopword(word):
+                continue
             entry = self.words.get(word)    # For each word, get index
             entries[word] = entry           #   of matching files
             if not entry:                   # Nothing for this one word (fail)
                 return {}
             if hits is None:
                 hits = {}
-                for k in entry.keys():
-                    if not self.fileids.has_key(k):
-                        raise ValueError, 'Index is corrupted: re-generate it'
+                for k in entry:
+                    if k not in self.fileids:
+                        raise ValueError('Index is corrupted: re-generate it')
                     hits[k] = self.fileids[k]
             else:
                 # Eliminate hits for every non-match
-                for fileid in hits.keys():
-                    if not entry.has_key(fileid):
+                for fileid in list(hits):
+                    if fileid not in entry:
                         del hits[fileid]
         if hits is None:
             return {}
-        return hits.values()
+        return list(hits.values())
 
     segments = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#_-!"
     def load_index(self, reload=0, wordlist=None):
@@ -205,7 +205,7 @@ class Indexer(IndexerBase):
                 dbslice = marshal.loads(pickle_str)
                 if dbslice.get('WORDS'):
                     # if it has some words, add them
-                    for word, entry in dbslice['WORDS'].items():
+                    for word, entry in dbslice['WORDS'].iteritems():
                         db['WORDS'][word] = entry
                 if dbslice.get('FILES'):
                     # if it has some files, add them
@@ -241,7 +241,7 @@ class Indexer(IndexerBase):
         segdicts = {}                           # Need batch of empty dicts
         for segment in letters:
             segdicts[segment] = {}
-        for word, entry in self.words.items():  # Split into segment dicts
+        for word, entry in self.words.iteritems():  # Split into segment dicts
             initchar = word[0].upper()
             segdicts[initchar][word] = entry
 
@@ -262,7 +262,7 @@ class Indexer(IndexerBase):
         '''
         self.load_index()
 
-        if not self.files.has_key(identifier):
+        if identifier not in self.files:
             return
 
         file_index = self.files[identifier][0]
@@ -270,8 +270,8 @@ class Indexer(IndexerBase):
         del self.fileids[file_index]
 
         # The much harder part, cleanup the word index
-        for key, occurs in self.words.items():
-            if occurs.has_key(file_index):
+        for key, occurs in self.words.iteritems():
+            if file_index in occurs:
                 del occurs[file_index]
 
         # save needed

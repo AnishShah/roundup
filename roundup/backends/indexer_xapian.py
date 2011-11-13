@@ -24,7 +24,6 @@ class Indexer(IndexerBase):
         '''Save the changes to the index.'''
         if not self.transaction_active:
             return
-        # XXX: Xapian databases don't actually implement transactions yet
         database = self._get_database()
         database.commit_transaction()
         self.transaction_active = False
@@ -36,7 +35,6 @@ class Indexer(IndexerBase):
     def rollback(self):
         if not self.transaction_active:
             return
-        # XXX: Xapian databases don't actually implement transactions yet
         database = self._get_database()
         database.cancel_transaction()
         self.transaction_active = False
@@ -59,7 +57,9 @@ class Indexer(IndexerBase):
 
         # open the database and start a transaction if needed
         database = self._get_database()
-        # XXX: Xapian databases don't actually implement transactions yet
+
+        # XXX: Xapian now supports transactions, 
+        #  but there is a call to save_index() missing.
         #if not self.transaction_active:
             #database.begin_transaction()
             #self.transaction_active = True
@@ -72,32 +72,21 @@ class Indexer(IndexerBase):
         # indexed so we know what we're matching when we get results
         identifier = '%s:%s:%s'%identifier
 
-        # see if the id is in the database
-        enquire = xapian.Enquire(database)
-        query = xapian.Query(xapian.Query.OP_AND, [identifier])
-        enquire.set_query(query)
-        matches = enquire.get_mset(0, 10)
-        if matches.size():      # would it killya to implement __len__()??
-            b = matches.begin()
-            docid = b.get_docid()
-        else:
-            docid = None
-
         # create the new document
         doc = xapian.Document()
         doc.set_data(identifier)
-        doc.add_posting(identifier, 0)
+        doc.add_term(identifier, 0)
 
-        for match in re.finditer(r'\b\w{2,25}\b', text.upper()):
+        for match in re.finditer(r'\b\w{%d,%d}\b'
+                                 % (self.minlength, self.maxlength),
+                                 text.upper()):
             word = match.group(0)
             if self.is_stopword(word):
                 continue
             term = stemmer(word)
             doc.add_posting(term, match.start(0))
-        if docid:
-            database.replace_document(docid, doc)
-        else:
-            database.add_document(doc)
+
+        database.replace_document(identifier, doc)
 
     def find(self, wordlist):
         '''look up all the words in the wordlist.
@@ -112,13 +101,15 @@ class Indexer(IndexerBase):
         enquire = xapian.Enquire(database)
         stemmer = xapian.Stem("english")
         terms = []
-        for term in [word.upper() for word in wordlist if 26 > len(word) > 2]:
-            terms.append(stemmer(term.upper()))
+        for term in [word.upper() for word in wordlist
+                          if self.minlength <= len(word) <= self.maxlength]:
+            if not self.is_stopword(term):
+                terms.append(stemmer(term))
         query = xapian.Query(xapian.Query.OP_AND, terms)
 
         enquire.set_query(query)
         matches = enquire.get_mset(0, 10)
 
-        return [tuple(m[xapian.MSET_DOCUMENT].get_data().split(':'))
+        return [tuple(m.document.get_data().split(':'))
             for m in matches]
 

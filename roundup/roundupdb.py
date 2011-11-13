@@ -16,23 +16,36 @@ from __future__ import nested_scopes
 # BASIS, AND THERE IS NO OBLIGATION WHATSOEVER TO PROVIDE MAINTENANCE,
 # SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
 #
-# $Id: roundupdb.py,v 1.139 2008-08-07 06:31:16 richard Exp $
 
 """Extending hyperdb with types specific to issue-tracking.
 """
 __docformat__ = 'restructuredtext'
 
 import re, os, smtplib, socket, time, random
-import cStringIO, base64, quopri, mimetypes
+import cStringIO, base64, mimetypes
 import os.path
+import logging
+from email import Encoders
+from email.Utils import formataddr
+from email.Header import Header
+from email.MIMEText import MIMEText
+from email.MIMEBase import MIMEBase
+from email.MIMEMultipart import MIMEMultipart
 
-from rfc2822 import encode_header
+from anypy.email_ import FeedParser
 
 from roundup import password, date, hyperdb
 from roundup.i18n import _
+from roundup.hyperdb import iter_roles
 
-# MessageSendError is imported for backwards compatibility
-from roundup.mailer import Mailer, straddr, MessageSendError
+from roundup.mailer import Mailer, MessageSendError, encode_quopri, \
+    nice_sender_header
+
+try:
+    import pyme, pyme.core
+except ImportError:
+    pyme = None
+
 
 class Database:
 
@@ -97,8 +110,7 @@ class Database:
             elif isinstance(proptype, hyperdb.Interval):
                 props[propname] = date.Interval(value)
             elif isinstance(proptype, hyperdb.Password):
-                props[propname] = password.Password()
-                props[propname].unpack(value)
+                props[propname] = password.Password(encrypted=value)
 
         # tag new user creation with 'admin'
         self.journaltag = 'admin'
@@ -113,6 +125,29 @@ class Database:
         self.commit()
 
         return userid
+
+
+    def log_debug(self, msg, *args, **kwargs):
+        """Log a message with level DEBUG."""
+
+        logger = self.get_logger()
+        logger.debug(msg, *args, **kwargs)
+
+    def log_info(self, msg, *args, **kwargs):
+        """Log a message with level INFO."""
+
+        logger = self.get_logger()
+        logger.info(msg, *args, **kwargs)
+
+    def get_logger(self):
+        """Return the logger for this database."""
+
+        # Because getting a logger requires acquiring a lock, we want
+        # to do it only once.
+        if not hasattr(self, '__logger'):
+            self.__logger = logging.getLogger('roundup.hyperdb')
+
+        return self.__logger
 
 
 class DetectorError(RuntimeError):
@@ -152,7 +187,7 @@ class IssueClass:
     )
 
     # New methods:
-    def addmessage(self, nodeid, summary, text):
+    def addmessage(self, issueid, summary, text):
         """Add a message to an issue's mail spool.
 
         A new "msg" node is constructed using the current date, the user that
@@ -165,8 +200,8 @@ class IssueClass:
         appended to the "messages" field of the specified issue.
         """
 
-    def nosymessage(self, nodeid, msgid, oldvalues, whichnosy='nosy',
-            from_address=None, cc=[], bcc=[]):
+    def nosymessage(self, issueid, msgid, oldvalues, whichnosy='nosy',
+            from_address=None, cc=[], bcc=[], cc_emails = [], bcc_emails = []):
         """Send a message to the members of an issue's nosy list.
 
         The message is sent only to users on the nosy list who are not
@@ -184,8 +219,26 @@ class IssueClass:
         The "bcc" argument also indicates additional recipients to send the
         message to that may not be specified in the message's recipients
         list. These recipients will not be included in the To: or Cc:
-        address lists.
+        address lists. Note that the list of bcc users *is* updated in
+        the recipient list of the message, so this field has to be
+        protected (using appropriate permissions), otherwise the bcc
+        will be decuceable for users who have web access to the tracker.
+
+        The cc_emails and bcc_emails arguments take a list of additional
+        recipient email addresses (just the mail address not roundup users)
+        this can be useful for sending to additional email addresses
+        which are no roundup users. These arguments are currently not
+        used by roundups nosyreaction but can be used by customized
+        (nosy-)reactors.
+
+        A note on encryption: If pgp encryption for outgoing mails is
+        turned on in the configuration and no specific pgp roles are
+        defined, we try to send encrypted mail to *all* users
+        *including* cc, bcc, cc_emails and bcc_emails and this might
+        fail if not all the keys are available in roundups keyring.
         """
+        encrypt = self.db.config.PGP_ENABLE and self.db.config.PGP_ENCRYPT
+        pgproles = self.db.config.PGP_ROLES
         if msgid:
             authid = self.db.msg.get(msgid, 'author')
             recipients = self.db.msg.get(msgid, 'recipients', [])
@@ -194,65 +247,125 @@ class IssueClass:
             authid = None
             recipients = []
 
-        sendto = []
-        bcc_sendto = []
+        sendto = dict (plain = [], crypt = [])
+        bcc_sendto = dict (plain = [], crypt = [])
         seen_message = {}
         for recipient in recipients:
             seen_message[recipient] = 1
 
         def add_recipient(userid, to):
-            # make sure they have an address
+            """ make sure they have an address """
             address = self.db.user.get(userid, 'address')
             if address:
-                to.append(address)
+                ciphered = encrypt and (not pgproles or
+                    self.db.user.has_role(userid, *iter_roles(pgproles)))
+                type = ['plain', 'crypt'][ciphered]
+                to[type].append(address)
                 recipients.append(userid)
 
         def good_recipient(userid):
-            # Make sure we don't send mail to either the anonymous
-            # user or a user who has already seen the message.
+            """ Make sure we don't send mail to either the anonymous
+                user or a user who has already seen the message.
+                Also check permissions on the message if not a system
+                message: A user must have view permission on content and
+                files to be on the receiver list. We do *not* check the
+                author etc. for now.
+            """
+            allowed = True
+            if msgid:
+                for prop in 'content', 'files':
+                    if prop in self.db.msg.properties:
+                        allowed = allowed and self.db.security.hasPermission(
+                            'View', userid, 'msg', prop, msgid)
             return (userid and
                     (self.db.user.get(userid, 'username') != 'anonymous') and
-                    not seen_message.has_key(userid))
+                    allowed and not seen_message.has_key(userid))
 
         # possibly send the message to the author, as long as they aren't
         # anonymous
         if (good_recipient(authid) and
             (self.db.config.MESSAGES_TO_AUTHOR == 'yes' or
-             (self.db.config.MESSAGES_TO_AUTHOR == 'new' and not oldvalues))):
+             (self.db.config.MESSAGES_TO_AUTHOR == 'new' and not oldvalues) or
+             (self.db.config.MESSAGES_TO_AUTHOR == 'nosy' and authid in
+             self.get(issueid, whichnosy)))):
             add_recipient(authid, sendto)
 
         if authid:
             seen_message[authid] = 1
 
         # now deal with the nosy and cc people who weren't recipients.
-        for userid in cc + self.get(nodeid, whichnosy):
+        for userid in cc + self.get(issueid, whichnosy):
             if good_recipient(userid):
                 add_recipient(userid, sendto)
+        if encrypt and not pgproles:
+            sendto['crypt'].extend (cc_emails)
+        else:
+            sendto['plain'].extend (cc_emails)
 
         # now deal with bcc people.
         for userid in bcc:
             if good_recipient(userid):
                 add_recipient(userid, bcc_sendto)
+        if encrypt and not pgproles:
+            bcc_sendto['crypt'].extend (bcc_emails)
+        else:
+            bcc_sendto['plain'].extend (bcc_emails)
 
         if oldvalues:
-            note = self.generateChangeNote(nodeid, oldvalues)
+            note = self.generateChangeNote(issueid, oldvalues)
         else:
-            note = self.generateCreateNote(nodeid)
+            note = self.generateCreateNote(issueid)
 
         # If we have new recipients, update the message's recipients
         # and send the mail.
-        if sendto or bcc_sendto:
+        if sendto['plain'] or sendto['crypt']:
+            # update msgid and recipients only if non-bcc have changed
             if msgid is not None:
                 self.db.msg.set(msgid, recipients=recipients)
-            self.send_message(nodeid, msgid, note, sendto, from_address,
-                bcc_sendto)
+        if sendto['plain'] or bcc_sendto['plain']:
+            self.send_message(issueid, msgid, note, sendto['plain'],
+                from_address, bcc_sendto['plain'])
+        if sendto['crypt'] or bcc_sendto['crypt']:
+            self.send_message(issueid, msgid, note, sendto['crypt'],
+                from_address, bcc_sendto['crypt'], crypt=True)
 
     # backwards compatibility - don't remove
     sendmessage = nosymessage
 
-    def send_message(self, nodeid, msgid, note, sendto, from_address=None,
-            bcc_sendto=[]):
-        '''Actually send the nominated message from this node to the sendto
+    def encrypt_to(self, message, sendto):
+        """ Encrypt given message to sendto receivers.
+            Returns a new RFC 3156 conforming message.
+        """
+        plain = pyme.core.Data(message.as_string())
+        cipher = pyme.core.Data()
+        ctx = pyme.core.Context()
+        ctx.set_armor(1)
+        keys = []
+        for adr in sendto:
+            ctx.op_keylist_start(adr, 0)
+            # only first key per email
+            k = ctx.op_keylist_next()
+            if k is not None:
+                keys.append(k)
+            else:
+                msg = _('No key for "%(adr)s" in keyring')%locals()
+                raise MessageSendError, msg
+            ctx.op_keylist_end()
+        ctx.op_encrypt(keys, 1, plain, cipher)
+        cipher.seek(0,0)
+        msg = MIMEMultipart('encrypted', boundary=None, _subparts=None,
+            protocol="application/pgp-encrypted")
+        part = MIMEBase('application', 'pgp-encrypted')
+        part.set_payload("Version: 1\r\n")
+        msg.attach(part)
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(cipher.read())
+        msg.attach(part)
+        return msg
+
+    def send_message(self, issueid, msgid, note, sendto, from_address=None,
+            bcc_sendto=[], crypt=False):
+        '''Actually send the nominated message from this issue to the sendto
            recipients, with the note appended.
         '''
         users = self.db.user
@@ -271,14 +384,14 @@ class IssueClass:
             # this is an old message that didn't get a messageid, so
             # create one
             messageid = "<%s.%s.%s%s@%s>"%(time.time(), random.random(),
-                                           self.classname, nodeid,
+                                           self.classname, issueid,
                                            self.db.config.MAIL_DOMAIN)
             if msgid is not None:
                 messages.set(msgid, messageid=messageid)
 
         # compose title
         cn = self.classname
-        title = self.get(nodeid, 'title') or '%s message copy'%cn
+        title = self.get(issueid, 'title') or '%s message copy'%cn
 
         # figure author information
         if msgid:
@@ -291,7 +404,7 @@ class IssueClass:
         authaddr = users.get(authid, 'address', '')
 
         if authaddr and self.db.config.MAIL_ADD_AUTHOREMAIL:
-            authaddr = " <%s>" % straddr( ('',authaddr) )
+            authaddr = " <%s>" % formataddr( ('',authaddr) )
         elif authaddr:
             authaddr = ""
 
@@ -300,11 +413,11 @@ class IssueClass:
 
         # put in roundup's signature
         if self.db.config.EMAIL_SIGNATURE_POSITION == 'top':
-            m.append(self.email_signature(nodeid, msgid))
+            m.append(self.email_signature(issueid, msgid))
 
         # add author information
         if authid and self.db.config.MAIL_ADD_AUTHORINFO:
-            if msgid and len(self.get(nodeid, 'messages')) == 1:
+            if msgid and len(self.get(issueid, 'messages')) == 1:
                 m.append(_("New submission from %(authname)s%(authaddr)s:")
                     % locals())
             elif msgid:
@@ -323,8 +436,7 @@ class IssueClass:
         if msgid :
             for fileid in messages.get(msgid, 'files') :
                 # check the attachment size
-                filename = self.db.filename('file', fileid, None)
-                filesize = os.path.getsize(filename)
+                filesize = self.db.filesize('file', fileid, None)
                 if filesize <= self.db.config.NOSY_MAX_ATTACHMENT_SIZE:
                     message_files.append(fileid)
                 else:
@@ -340,17 +452,13 @@ class IssueClass:
 
         # put in roundup's signature
         if self.db.config.EMAIL_SIGNATURE_POSITION == 'bottom':
-            m.append(self.email_signature(nodeid, msgid))
+            m.append(self.email_signature(issueid, msgid))
 
-        # encode the content as quoted-printable
+        # figure the encoding
         charset = getattr(self.db.config, 'EMAIL_CHARSET', 'utf-8')
-        m = '\n'.join(m)
-        if charset != 'utf-8':
-            m = unicode(m, 'utf-8').encode(charset)
-        content = cStringIO.StringIO(m)
-        content_encoded = cStringIO.StringIO()
-        quopri.encode(content, content_encoded, 0)
-        content_encoded = content_encoded.getvalue()
+
+        # construct the content and convert to unicode object
+        body = unicode('\n'.join(m), 'utf-8').encode(charset)
 
         # make sure the To line is always the same (for testing mostly)
         sendto.sort()
@@ -364,7 +472,7 @@ class IssueClass:
         if from_tag:
             from_tag = ' ' + from_tag
 
-        subject = '[%s%s] %s'%(cn, nodeid, title)
+        subject = '[%s%s] %s'%(cn, issueid, title)
         author = (authname + from_tag, from_address)
 
         # send an individual message per recipient?
@@ -372,6 +480,11 @@ class IssueClass:
             sendto = [[address] for address in sendto]
         else:
             sendto = [sendto]
+
+        # tracker sender info
+        tracker_name = unicode(self.db.config.TRACKER_NAME, 'utf-8')
+        tracker_name = nice_sender_header(tracker_name, from_address,
+            charset)
 
         # now send one or more messages
         # TODO: I believe we have to create a new message each time as we
@@ -381,21 +494,17 @@ class IssueClass:
         for sendto in sendto:
             # create the message
             mailer = Mailer(self.db.config)
-            message, writer = mailer.get_standard_message(sendto, subject,
-                author)
+
+            message = mailer.get_standard_message(multipart=message_files)
 
             # set reply-to to the tracker
-            tracker_name = self.db.config.TRACKER_NAME
-            if charset != 'utf-8':
-                tracker = unicode(tracker_name, 'utf-8').encode(charset)
-            tracker_name = encode_header(tracker_name, charset)
-            writer.addheader('Reply-To', straddr((tracker_name, from_address)))
+            message['Reply-To'] = tracker_name
 
             # message ids
             if messageid:
-                writer.addheader('Message-Id', messageid)
+                message['Message-Id'] = messageid
             if inreplyto:
-                writer.addheader('In-Reply-To', inreplyto)
+                message['In-Reply-To'] = inreplyto
 
             # Generate a header for each link or multilink to
             # a class that has a name attribute
@@ -406,57 +515,63 @@ class IssueClass:
                 if not 'name' in cl.getprops():
                     continue
                 if isinstance(prop, hyperdb.Link):
-                    value = self.get(nodeid, propname)
+                    value = self.get(issueid, propname)
                     if value is None:
                         continue
                     values = [value]
                 else:
-                    values = self.get(nodeid, propname)
+                    values = self.get(issueid, propname)
                     if not values:
                         continue
                 values = [cl.get(v, 'name') for v in values]
                 values = ', '.join(values)
-                writer.addheader("X-Roundup-%s-%s" % (self.classname, propname),
-                                 values)
+                header = "X-Roundup-%s-%s"%(self.classname, propname)
+                try:
+                    message[header] = values.encode('ascii')
+                except UnicodeError:
+                    message[header] = Header(values, charset)
+
             if not inreplyto:
                 # Default the reply to the first message
-                msgs = self.get(nodeid, 'messages')
+                msgs = self.get(issueid, 'messages')
                 # Assume messages are sorted by increasing message number here
                 # If the issue is just being created, and the submitter didn't
                 # provide a message, then msgs will be empty.
-                if msgs and msgs[0] != nodeid:
+                if msgs and msgs[0] != msgid:
                     inreplyto = messages.get(msgs[0], 'messageid')
                     if inreplyto:
-                        writer.addheader('In-Reply-To', inreplyto)
+                        message['In-Reply-To'] = inreplyto
 
             # attach files
             if message_files:
-                part = writer.startmultipartbody('mixed')
-                part = writer.nextpart()
-                part.addheader('Content-Transfer-Encoding', 'quoted-printable')
-                body = part.startbody('text/plain; charset=%s'%charset)
-                body.write(content_encoded)
+                # first up the text as a part
+                part = MIMEText(body)
+                part.set_charset(charset)
+                encode_quopri(part)
+                message.attach(part)
+
                 for fileid in message_files:
                     name = files.get(fileid, 'name')
                     mime_type = files.get(fileid, 'type')
                     content = files.get(fileid, 'content')
-                    part = writer.nextpart()
                     if mime_type == 'text/plain':
-                        part.addheader('Content-Disposition',
-                            'attachment;\n filename="%s"'%name)
                         try:
                             content.decode('ascii')
                         except UnicodeError:
                             # the content cannot be 7bit-encoded.
                             # use quoted printable
-                            part.addheader('Content-Transfer-Encoding',
-                                'quoted-printable')
-                            body = part.startbody('text/plain')
-                            body.write(quopri.encodestring(content))
+                            # XXX stuffed if we know the charset though :(
+                            part = MIMEText(content)
+                            encode_quopri(part)
                         else:
-                            part.addheader('Content-Transfer-Encoding', '7bit')
-                            body = part.startbody('text/plain')
-                            body.write(content)
+                            part = MIMEText(content)
+                            part['Content-Transfer-Encoding'] = '7bit'
+                    elif mime_type == 'message/rfc822':
+                        main, sub = mime_type.split('/')
+                        p = FeedParser()
+                        p.feed(content)
+                        part = MIMEBase(main, sub)
+                        part.set_payload([p.close()])
                     else:
                         # some other type, so encode it
                         if not mime_type:
@@ -464,25 +579,44 @@ class IssueClass:
                             mime_type = mimetypes.guess_type(name)[0]
                         if mime_type is None:
                             mime_type = 'application/octet-stream'
-                        part.addheader('Content-Disposition',
-                            'attachment;\n filename="%s"'%name)
-                        part.addheader('Content-Transfer-Encoding', 'base64')
-                        body = part.startbody(mime_type)
-                        body.write(base64.encodestring(content))
-                writer.lastpart()
-            else:
-                writer.addheader('Content-Transfer-Encoding',
-                    'quoted-printable')
-                body = writer.startbody('text/plain; charset=%s'%charset)
-                body.write(content_encoded)
+                        main, sub = mime_type.split('/')
+                        part = MIMEBase(main, sub)
+                        part.set_payload(content)
+                        Encoders.encode_base64(part)
+                    cd = 'Content-Disposition'
+                    part[cd] = 'attachment;\n filename="%s"'%name
+                    message.attach(part)
 
-            if first:
-                mailer.smtp_send(sendto + bcc_sendto, message)
             else:
-                mailer.smtp_send(sendto, message)
+                message.set_payload(body)
+                encode_quopri(message)
+
+            if crypt:
+                send_msg = self.encrypt_to (message, sendto)
+            else:
+                send_msg = message
+            mailer.set_message_attributes(send_msg, sendto, subject, author)
+            send_msg ['Message-Id'] = message ['Message-Id']
+            send_msg ['Reply-To'] = message ['Reply-To']
+            if message.get ('In-Reply-To'):
+                send_msg ['In-Reply-To'] = message ['In-Reply-To']
+            mailer.smtp_send(sendto, send_msg.as_string())
+            if first:
+                if crypt:
+                    # send individual bcc mails, otherwise receivers can
+                    # deduce bcc recipients from keys in message
+                    for bcc in bcc_sendto:
+                        send_msg = self.encrypt_to (message, [bcc])
+                        send_msg ['Message-Id'] = message ['Message-Id']
+                        send_msg ['Reply-To'] = message ['Reply-To']
+                        if message.get ('In-Reply-To'):
+                            send_msg ['In-Reply-To'] = message ['In-Reply-To']
+                        mailer.smtp_send([bcc], send_msg.as_string())
+                elif bcc_sendto:
+                    mailer.smtp_send(bcc_sendto, send_msg.as_string())
             first = False
 
-    def email_signature(self, nodeid, msgid):
+    def email_signature(self, issueid, msgid):
         ''' Add a signature to the e-mail with some useful information
         '''
         # simplistic check to see if the url is valid,
@@ -495,17 +629,17 @@ class IssueClass:
         else:
             if not base.endswith('/'):
                 base = base + '/'
-            web = base + self.classname + nodeid
+            web = base + self.classname + issueid
 
         # ensure the email address is properly quoted
-        email = straddr((self.db.config.TRACKER_NAME,
+        email = formataddr((self.db.config.TRACKER_NAME,
             self.db.config.TRACKER_EMAIL))
 
         line = '_' * max(len(web)+2, len(email))
         return '\n%s\n%s\n<%s>\n%s'%(line, email, web, line)
 
 
-    def generateCreateNote(self, nodeid):
+    def generateCreateNote(self, issueid):
         """Generate a create note that lists initial property values
         """
         cn = self.classname
@@ -517,7 +651,7 @@ class IssueClass:
         prop_items = props.items()
         prop_items.sort()
         for propname, prop in prop_items:
-            value = cl.get(nodeid, propname, None)
+            value = cl.get(issueid, propname, None)
             # skip boring entries
             if not value:
                 continue
@@ -547,7 +681,7 @@ class IssueClass:
         m.insert(0, '')
         return '\n'.join(m)
 
-    def generateChangeNote(self, nodeid, oldvalues):
+    def generateChangeNote(self, issueid, oldvalues):
         """Generate a change note that lists property changes
         """
         if not isinstance(oldvalues, type({})):
@@ -568,7 +702,7 @@ class IssueClass:
             # not all keys from oldvalues might be available in database
             # this happens when property was deleted
             try:
-                new_value = cl.get(nodeid, key)
+                new_value = cl.get(issueid, key)
             except KeyError:
                 continue
             # the old value might be non existent
@@ -589,7 +723,7 @@ class IssueClass:
         changed_items.sort()
         for propname, oldvalue in changed_items:
             prop = props[propname]
-            value = cl.get(nodeid, propname, None)
+            value = cl.get(issueid, propname, None)
             if isinstance(prop, hyperdb.Link):
                 link = self.db.classes[prop.classname]
                 key = link.labelprop(default_to_id=1)

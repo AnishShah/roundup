@@ -27,6 +27,8 @@ from roundup import hyperdb, date, support
 from roundup import i18n
 from roundup.i18n import _
 
+from KeywordsExpr import render_keywords_expression_editor
+
 try:
     import cPickle as pickle
 except ImportError:
@@ -115,9 +117,9 @@ def find_template(dir, name, view):
     if os.path.exists(src):
         return (src, generic)
 
-    raise NoTemplate, 'No template file exists for templating "%s" '\
+    raise NoTemplate('No template file exists for templating "%s" '
         'with template "%s" (neither "%s" nor "%s")'%(name, view,
-        filename, generic)
+        filename, generic))
 
 class Templates:
     templates = {}
@@ -183,12 +185,28 @@ class Templates:
             return self.templates[src]
 
         # compile the template
-        self.templates[src] = pt = RoundupPageTemplate()
+        pt = RoundupPageTemplate()
         # use pt_edit so we can pass the content_type guess too
         content_type = mimetypes.guess_type(filename)[0] or 'text/html'
         pt.pt_edit(open(src).read(), content_type)
         pt.id = filename
         pt.mtime = stime
+        # Add it to the cache.  We cannot do this until the template
+        # is fully initialized, as we could otherwise have a race
+        # condition when running with multiple threads:
+        #
+        # 1. Thread A notices the template is not in the cache,
+        #    adds it, but has not yet set "mtime".
+        #
+        # 2. Thread B notices the template is in the cache, checks
+        #    "mtime" (above) and crashes.
+        #
+        # Since Python dictionary access is atomic, as long as we
+        # insert "pt" only after it is fully initialized, we avoid
+        # this race condition.  It's possible that two separate
+        # threads will both do the work of initializing the template,
+        # but the risk of wasted work is offset by avoiding a lock.
+        self.templates[src] = pt
         return pt
 
     def __getitem__(self, name):
@@ -341,7 +359,7 @@ class HTMLDatabase:
         # we want config to be exposed
         self.config = client.db.config
 
-    def __getitem__(self, item, desre=re.compile(r'(?P<cl>\w+)(?P<id>[-\d]+)')):
+    def __getitem__(self, item, desre=re.compile(r'(?P<cl>[a-zA-Z_]+)(?P<id>[-\d]+)')):
         # check to see if we're actually accessing an item
         m = desre.match(item)
         if m:
@@ -420,17 +438,19 @@ def _set_input_default_args(dic):
         except KeyError:
             pass
 
+def cgi_escape_attrs(**attrs):
+    return ' '.join(['%s="%s"'%(k,cgi.escape(str(v), True))
+        for k,v in attrs.items()])
+
 def input_html4(**attrs):
     """Generate an 'input' (html4) element with given attributes"""
     _set_input_default_args(attrs)
-    return '<input %s>'%' '.join(['%s="%s"'%(k,cgi.escape(str(v), True))
-        for k,v in attrs.items()])
+    return '<input %s>'%cgi_escape_attrs(**attrs)
 
 def input_xhtml(**attrs):
     """Generate an 'input' (xhtml) element with given attributes"""
     _set_input_default_args(attrs)
-    return '<input %s/>'%' '.join(['%s="%s"'%(k,cgi.escape(str(v), True))
-        for k,v in attrs.items()])
+    return '<input %s/>'%cgi_escape_attrs(**attrs)
 
 class HTMLInputMixin:
     """ requires a _client property """
@@ -473,6 +493,14 @@ class HTMLPermissions:
             raise Unauthorised("edit", self._classname,
                 translator=self._client.translator)
 
+    def retire_check(self):
+        """ Raise the Unauthorised exception if the user's not permitted to
+            retire items of this class.
+        """
+        if not self.is_retire_ok():
+            raise Unauthorised("retire", self._classname,
+                translator=self._client.translator)
+
 
 class HTMLClass(HTMLInputMixin, HTMLPermissions):
     """ Accesses through a class (either through *class* or *db.<classname>*)
@@ -494,14 +522,23 @@ class HTMLClass(HTMLInputMixin, HTMLPermissions):
     def is_edit_ok(self):
         """ Is the user allowed to Create the current class?
         """
-        return self._db.security.hasPermission('Create', self._client.userid,
-            self._classname)
+        perm = self._db.security.hasPermission
+        return perm('Web Access', self._client.userid) and perm('Create',
+            self._client.userid, self._classname)
+
+    def is_retire_ok(self):
+        """ Is the user allowed to retire items of the current class?
+        """
+        perm = self._db.security.hasPermission
+        return perm('Web Access', self._client.userid) and perm('Retire',
+            self._client.userid, self._classname)
 
     def is_view_ok(self):
         """ Is the user allowed to View the current class?
         """
-        return self._db.security.hasPermission('View', self._client.userid,
-            self._classname)
+        perm = self._db.security.hasPermission
+        return perm('Web Access', self._client.userid) and perm('View',
+            self._client.userid, self._classname)
 
     def is_only_view_ok(self):
         """ Is the user only allowed to View (ie. not Create) the current class?
@@ -530,24 +567,7 @@ class HTMLClass(HTMLInputMixin, HTMLPermissions):
         for klass, htmlklass in propclasses:
             if not isinstance(prop, klass):
                 continue
-            if form.has_key(item):
-                if isinstance(prop, hyperdb.Multilink):
-                    value = lookupIds(self._db, prop,
-                        handleListCGIValue(form[item]), fail_ok=1)
-                elif isinstance(prop, hyperdb.Link):
-                    value = form[item].value.strip()
-                    if value:
-                        value = lookupIds(self._db, prop, [value],
-                            fail_ok=1)[0]
-                    else:
-                        value = None
-                else:
-                    value = form[item].value.strip() or None
-            else:
-                if isinstance(prop, hyperdb.Multilink):
-                    value = []
-                else:
-                    value = None
+            value = prop.get_default_value()
             return htmlklass(self._client, self._classname, None, prop, item,
                 value, self._anonymous)
 
@@ -580,13 +600,10 @@ class HTMLClass(HTMLInputMixin, HTMLPermissions):
         l = []
         for name, prop in self._props.items():
             for klass, htmlklass in propclasses:
-                if isinstance(prop, hyperdb.Multilink):
-                    value = []
-                else:
-                    value = None
                 if isinstance(prop, klass):
+                    value = prop.get_default_value()
                     l.append(htmlklass(self._client, self._classname, '',
-                        prop, name, value, self._anonymous))
+                                       prop, name, value, self._anonymous))
         if sort:
             l.sort(lambda a,b:cmp(a._name, b._name))
         return l
@@ -602,6 +619,8 @@ class HTMLClass(HTMLInputMixin, HTMLPermissions):
         # check perms
         check = self._client.db.security.hasPermission
         userid = self._client.userid
+        if not check('Web Access', userid):
+            return []
 
         l = [HTMLItem(self._client, self._classname, id) for id in l
             if check('View', userid, self._classname, itemid=id)]
@@ -615,9 +634,18 @@ class HTMLClass(HTMLInputMixin, HTMLPermissions):
         s = StringIO.StringIO()
         writer = csv.writer(s)
         writer.writerow(props)
+        check = self._client.db.security.hasPermission
+        userid = self._client.userid
+        if not check('Web Access', userid):
+            return ''
         for nodeid in self._klass.list():
             l = []
             for name in props:
+                # check permission to view this property on this item
+                if not check('View', userid, itemid=nodeid,
+                        classname=self._klass.classname, property=name):
+                    raise Unauthorised('view', self._klass.classname,
+                        translator=self._client.translator)
                 value = self._klass.get(nodeid, name)
                 if value is None:
                     l.append('')
@@ -641,13 +669,23 @@ class HTMLClass(HTMLInputMixin, HTMLPermissions):
 
             "request" takes precedence over the other three arguments.
         """
+        security = self._db.security
+        userid = self._client.userid
         if request is not None:
+            # for a request we asume it has already been
+            # security-filtered
             filterspec = request.filterspec
             sort = request.sort
             group = request.group
+        else:
+            cn = self.classname
+            filterspec = security.filterFilterspec(userid, cn, filterspec)
+            sort = security.filterSortspec(userid, cn, sort)
+            group = security.filterSortspec(userid, cn, group)
 
-        check = self._db.security.hasPermission
-        userid = self._client.userid
+        check = security.hasPermission
+        if not check('Web Access', userid):
+            return []
 
         l = [HTMLItem(self._client, self.classname, id)
              for id in self._klass.filter(None, filterspec, sort, group)
@@ -695,7 +733,7 @@ class HTMLClass(HTMLInputMixin, HTMLPermissions):
             if 'username' in properties.split( ',' ):
                 sort = 'username'
             else:
-                sort = find_sort_key(self._klass)
+                sort = self._klass.orderprop()
         sort = '&amp;@sort=' + sort
         if property:
             property = '&amp;property=%s'%property
@@ -775,21 +813,30 @@ class _HTMLItem(HTMLInputMixin, HTMLPermissions):
         HTMLInputMixin.__init__(self)
 
     def is_edit_ok(self):
-        """ Is the user allowed to Edit the current class?
+        """ Is the user allowed to Edit this item?
         """
-        return self._db.security.hasPermission('Edit', self._client.userid,
-            self._classname, itemid=self._nodeid)
+        perm = self._db.security.hasPermission
+        return perm('Web Access', self._client.userid) and perm('Edit',
+            self._client.userid, self._classname, itemid=self._nodeid)
+
+    def is_retire_ok(self):
+        """ Is the user allowed to Reture this item?
+        """
+        perm = self._db.security.hasPermission
+        return perm('Web Access', self._client.userid) and perm('Retire',
+            self._client.userid, self._classname, itemid=self._nodeid)
 
     def is_view_ok(self):
-        """ Is the user allowed to View the current class?
+        """ Is the user allowed to View this item?
         """
-        if self._db.security.hasPermission('View', self._client.userid,
-                self._classname, itemid=self._nodeid):
+        perm = self._db.security.hasPermission
+        if perm('Web Access', self._client.userid) and perm('View',
+                self._client.userid, self._classname, itemid=self._nodeid):
             return 1
         return self.is_edit_ok()
 
     def is_only_view_ok(self):
-        """ Is the user only allowed to View (ie. not Edit) the current class?
+        """ Is the user only allowed to View (ie. not Edit) this item?
         """
         return self.is_view_ok() and not self.is_edit_ok()
 
@@ -868,7 +915,8 @@ class _HTMLItem(HTMLInputMixin, HTMLPermissions):
         # XXX do this
         return []
 
-    def history(self, direction='descending', dre=re.compile('^\d+$')):
+    def history(self, direction='descending', dre=re.compile('^\d+$'),
+            limit=None):
         if not self.is_view_ok():
             return self._('[hidden]')
 
@@ -899,6 +947,10 @@ class _HTMLItem(HTMLInputMixin, HTMLPermissions):
         history = self._klass.history(self._nodeid)
         history.sort()
         history.reverse()
+
+        # restrict the volume
+        if limit:
+            history = history[:limit]
 
         timezone = self._db.getUserTimezone()
         l = []
@@ -1056,6 +1108,13 @@ class _HTMLItem(HTMLInputMixin, HTMLPermissions):
                             cell[-1] += ' -> %s'%current[k]
                             current[k] = val
 
+                    elif isinstance(prop, hyperdb.Password) and args[k] is not None:
+                        val = args[k].dummystr()
+                        cell.append('%s: %s'%(self._(k), val))
+                        if current.has_key(k):
+                            cell[-1] += ' -> %s'%current[k]
+                            current[k] = val
+
                     elif not args[k]:
                         if current.has_key(k):
                             cell.append('%s: %s'%(self._(k), current[k]))
@@ -1116,6 +1175,9 @@ class _HTMLItem(HTMLInputMixin, HTMLPermissions):
 
         # new template, using the specified classname and request
         pt = self._client.instance.templates.get(req.classname, 'search')
+        # The context for a search page should be the class, not any
+        # node.
+        self._client.nodeid = None
 
         # use our fabricated request
         return pt.render(self._client, req.classname, req)
@@ -1167,12 +1229,9 @@ class _HTMLUser(_HTMLItem):
         return self._db.security.hasPermission(permission,
             self._nodeid, classname, property, itemid)
 
-    def hasRole(self, rolename):
-        """Determine whether the user has the Role."""
-        roles = self._db.user.get(self._nodeid, 'roles').split(',')
-        for role in roles:
-            if role.strip() == rolename: return True
-        return False
+    def hasRole(self, *rolenames):
+        """Determine whether the user has any role in rolenames."""
+        return self._db.user.has_role(self._nodeid, *rolenames)
 
 def HTMLItem(client, classname, nodeid, anonymous=0):
     if classname == 'user':
@@ -1202,15 +1261,40 @@ class HTMLProperty(HTMLInputMixin, HTMLPermissions):
         self._anonymous = anonymous
         self._name = name
         if not anonymous:
-            self._formname = '%s%s@%s'%(classname, nodeid, name)
+            if nodeid:
+                self._formname = '%s%s@%s'%(classname, nodeid, name)
+            else:
+                # This case occurs when creating a property for a
+                # non-anonymous class.
+                self._formname = '%s@%s'%(classname, name)
         else:
             self._formname = name
+
+        # If no value is already present for this property, see if one
+        # is specified in the current form.
+        form = self._client.form
+        if not self._value and form.has_key(self._formname):
+            if isinstance(prop, hyperdb.Multilink):
+                value = lookupIds(self._db, prop,
+                                  handleListCGIValue(form[self._formname]),
+                                  fail_ok=1)
+            elif isinstance(prop, hyperdb.Link):
+                value = form.getfirst(self._formname).strip()
+                if value:
+                    value = lookupIds(self._db, prop, [value],
+                                      fail_ok=1)[0]
+                else:
+                    value = None
+            else:
+                value = form.getfirst(self._formname).strip() or None
+            self._value = value
 
         HTMLInputMixin.__init__(self)
 
     def __repr__(self):
-        return '<HTMLProperty(0x%x) %s %r %r>'%(id(self), self._formname,
-            self._prop, self._value)
+        classname = self.__class__.__name__
+        return '<%s(0x%x) %s %r %r>'%(classname, id(self), self._formname,
+                                      self._prop, self._value)
     def __str__(self):
         return self.plain()
     def __cmp__(self, other):
@@ -1230,17 +1314,22 @@ class HTMLProperty(HTMLInputMixin, HTMLPermissions):
         property. Check "Create" for new items, or "Edit" for existing
         ones.
         """
+        perm = self._db.security.hasPermission
+        userid = self._client.userid
         if self._nodeid:
-            return self._db.security.hasPermission('Edit', self._client.userid,
-                self._classname, self._name, self._nodeid)
-        return self._db.security.hasPermission('Create', self._client.userid,
-            self._classname, self._name)
+            if not perm('Web Access', userid):
+                return False
+            return perm('Edit', userid, self._classname, self._name,
+                self._nodeid)
+        return perm('Create', userid, self._classname, self._name) or \
+            perm('Register', userid, self._classname, self._name)
 
     def is_view_ok(self):
         """ Is the user allowed to View the current class?
         """
-        if self._db.security.hasPermission('View', self._client.userid,
-                self._classname, self._name, self._nodeid):
+        perm = self._db.security.hasPermission
+        if perm('Web Access',  self._client.userid) and perm('View',
+                self._client.userid, self._classname, self._name, self._nodeid):
             return 1
         return self.is_edit_ok()
 
@@ -1266,7 +1355,42 @@ class StringHTMLProperty(HTMLProperty):
     )''', re.X | re.I)
     protocol_re = re.compile('^(ht|f)tp(s?)://', re.I)
 
-    def _hyper_repl_item(self,match,replacement):
+
+
+    def _hyper_repl(self, match):
+        if match.group('url'):
+            return self._hyper_repl_url(match, '<a href="%s">%s</a>%s')
+        elif match.group('email'):
+            return self._hyper_repl_email(match, '<a href="mailto:%s">%s</a>')
+        elif len(match.group('id')) < 10:
+            return self._hyper_repl_item(match,
+                '<a href="%(cls)s%(id)s">%(item)s</a>')
+        else:
+            # just return the matched text
+            return match.group(0)
+
+    def _hyper_repl_url(self, match, replacement):
+        u = s = match.group('url')
+        if not self.protocol_re.search(s):
+            u = 'http://' + s
+        end = ''
+        if '&gt;' in s:
+            # catch an escaped ">" in the URL
+            pos = s.find('&gt;')
+            end = s[pos:]
+            u = s = s[:pos]
+        if ')' in s and s.count('(') != s.count(')'):
+            # don't include extraneous ')' in the link
+            pos = s.rfind(')')
+            end = s[pos:] + end
+            u = s = s[:pos]
+        return replacement % (u, s, end)
+
+    def _hyper_repl_email(self, match, replacement):
+        s = match.group('email')
+        return replacement % (s, s)
+
+    def _hyper_repl_item(self, match, replacement):
         item = match.group('item')
         cls = match.group('class').lower()
         id = match.group('id')
@@ -1279,24 +1403,6 @@ class StringHTMLProperty(HTMLProperty):
         except KeyError:
             return item
 
-    def _hyper_repl(self, match):
-        if match.group('url'):
-            u = s = match.group('url')
-            if not self.protocol_re.search(s):
-                u = 'http://' + s
-            # catch an escaped ">" at the end of the URL
-            if s.endswith('&gt;'):
-                u = s = s[:-4]
-                e = '&gt;'
-            else:
-                e = ''
-            return '<a href="%s">%s</a>%s'%(u, s, e)
-        elif match.group('email'):
-            s = match.group('email')
-            return '<a href="mailto:%s">%s</a>'%(s, s)
-        else:
-            return self._hyper_repl_item(match,
-                '<a href="%(cls)s%(id)s">%(item)s</a>')
 
     def _hyper_repl_rst(self, match):
         if match.group('url'):
@@ -1305,8 +1411,11 @@ class StringHTMLProperty(HTMLProperty):
         elif match.group('email'):
             s = match.group('email')
             return '`%s <mailto:%s>`_'%(s, s)
-        else:
+        elif len(match.group('id')) < 10:
             return self._hyper_repl_item(match,'`%(item)s <%(cls)s%(id)s>`_')
+        else:
+            # just return the matched text
+            return match.group(0)
 
     def hyperlinked(self):
         """ Render a "hyperlinked" version of the text """
@@ -1389,7 +1498,7 @@ class StringHTMLProperty(HTMLProperty):
         s = self.plain(escape=0, hyperlink=0)
         if hyperlink:
             s = self.hyper_re.sub(self._hyper_repl_rst, s)
-        return ReStructuredText(s, writer_name="html")["body"].encode("utf-8",
+        return ReStructuredText(s, writer_name="html")["html_body"].encode("utf-8",
             "replace")
 
     def field(self, **kwargs):
@@ -1423,8 +1532,7 @@ class StringHTMLProperty(HTMLProperty):
 
             value = '&quot;'.join(value.split('"'))
         name = self._formname
-        passthrough_args = ' '.join(['%s="%s"' % (k, cgi.escape(str(v), True))
-            for k,v in kwargs.items()])
+        passthrough_args = cgi_escape_attrs(**kwargs)
         return ('<textarea %(passthrough_args)s name="%(name)s" id="%(name)s"'
                 ' rows="%(rows)s" cols="%(cols)s">'
                  '%(value)s</textarea>') % locals()
@@ -1460,9 +1568,12 @@ class PasswordHTMLProperty(HTMLProperty):
 
         if self._value is None:
             return ''
-        return self._('*encrypted*')
+        value = self._value.dummystr()
+        if escape:
+            value = cgi.escape(value)
+        return value
 
-    def field(self, size=30):
+    def field(self, size=30, **kwargs):
         """ Render a form edit field for the property.
 
             If not editable, just display the value via plain().
@@ -1470,7 +1581,8 @@ class PasswordHTMLProperty(HTMLProperty):
         if not self.is_edit_ok():
             return self.plain(escape=1)
 
-        return self.input(type="password", name=self._formname, size=size)
+        return self.input(type="password", name=self._formname, size=size,
+                          **kwargs)
 
     def confirm(self, size=30):
         """ Render a second form edit field for the property, used for
@@ -1499,7 +1611,7 @@ class NumberHTMLProperty(HTMLProperty):
 
         return str(self._value)
 
-    def field(self, size=30):
+    def field(self, size=30, **kwargs):
         """ Render a form edit field for the property.
 
             If not editable, just display the value via plain().
@@ -1511,7 +1623,8 @@ class NumberHTMLProperty(HTMLProperty):
         if value is None:
             value = ''
 
-        return self.input(name=self._formname, value=value, size=size)
+        return self.input(name=self._formname, value=value, size=size,
+                          **kwargs)
 
     def __int__(self):
         """ Return an int of me
@@ -1535,7 +1648,7 @@ class BooleanHTMLProperty(HTMLProperty):
             return ''
         return self._value and self._("Yes") or self._("No")
 
-    def field(self):
+    def field(self, **kwargs):
         """ Render a form edit field for the property
 
             If not editable, just display the value via plain().
@@ -1551,15 +1664,17 @@ class BooleanHTMLProperty(HTMLProperty):
         checked = value and "checked" or ""
         if value:
             s = self.input(type="radio", name=self._formname, value="yes",
-                checked="checked")
+                checked="checked", **kwargs)
             s += self._('Yes')
-            s +=self.input(type="radio", name=self._formname, value="no")
+            s +=self.input(type="radio", name=self._formname,  value="no",
+                           **kwargs)
             s += self._('No')
         else:
-            s = self.input(type="radio", name=self._formname, value="yes")
+            s = self.input(type="radio", name=self._formname,  value="yes",
+                           **kwargs)
             s += self._('Yes')
             s +=self.input(type="radio", name=self._formname, value="no",
-                checked="checked")
+                checked="checked", **kwargs)
             s += self._('No')
         return s
 
@@ -1617,7 +1732,8 @@ class DateHTMLProperty(HTMLProperty):
         return DateHTMLProperty(self._client, self._classname, self._nodeid,
             self._prop, self._formname, ret)
 
-    def field(self, size=30, default=None, format=_marker, popcal=True):
+    def field(self, size=30, default=None, format=_marker, popcal=True,
+              **kwargs):
         """Render a form edit field for the property
 
         If not editable, just display the value via plain().
@@ -1652,7 +1768,8 @@ class DateHTMLProperty(HTMLProperty):
         elif isinstance(value, str) or isinstance(value, unicode):
             # most likely erroneous input to be passed back to user
             if isinstance(value, unicode): value = value.encode('utf8')
-            return self.input(name=self._formname, value=value, size=size)
+            return self.input(name=self._formname, value=value, size=size,
+                              **kwargs)
         else:
             raw_value = value
 
@@ -1672,7 +1789,8 @@ class DateHTMLProperty(HTMLProperty):
             if format is not self._marker:
                 value = value.pretty(format)
 
-        s = self.input(name=self._formname, value=value, size=size)
+        s = self.input(name=self._formname, value=value, size=size,
+                       **kwargs)
         if popcal:
             s += self.popcal()
         return s
@@ -1737,7 +1855,7 @@ class DateHTMLProperty(HTMLProperty):
         else :
             date = ""
         return ('<a class="classhelp" href="javascript:help_window('
-            "'%s?@template=calendar&property=%s&form=%s%s', %d, %d)"
+            "'%s?@template=calendar&amp;property=%s&amp;form=%s%s', %d, %d)"
             '">%s</a>'%(self._classname, self._name, form, date, width,
             height, label))
 
@@ -1767,7 +1885,7 @@ class IntervalHTMLProperty(HTMLProperty):
 
         return self._value.pretty()
 
-    def field(self, size=30):
+    def field(self, size=30, **kwargs):
         """ Render a form edit field for the property
 
             If not editable, just display the value via plain().
@@ -1779,7 +1897,8 @@ class IntervalHTMLProperty(HTMLProperty):
         if value is None:
             value = ''
 
-        return self.input(name=self._formname, value=value, size=size)
+        return self.input(name=self._formname, value=value, size=size,
+                          **kwargs)
 
 class LinkHTMLProperty(HTMLProperty):
     """ Link HTMLProperty
@@ -1822,14 +1941,17 @@ class LinkHTMLProperty(HTMLProperty):
         linkcl = self._db.classes[self._prop.classname]
         k = linkcl.labelprop(1)
         if num_re.match(self._value):
-            value = str(linkcl.get(self._value, k))
+            try:
+                value = str(linkcl.get(self._value, k))
+            except IndexError:
+                value = self._value
         else :
             value = self._value
         if escape:
             value = cgi.escape(value)
         return value
 
-    def field(self, showid=0, size=None):
+    def field(self, showid=0, size=None, **kwargs):
         """ Render a form edit field for the property
 
             If not editable, just display the value via plain().
@@ -1847,10 +1969,11 @@ class LinkHTMLProperty(HTMLProperty):
                 value = linkcl.get(self._value, k)
             else:
                 value = self._value
-        return self.input(name=self._formname, value=value, size=size)
+        return self.input(name=self._formname, value=value, size=size,
+                          **kwargs)
 
     def menu(self, size=None, height=None, showid=0, additional=[], value=None,
-            sort_on=None, **conditions):
+             sort_on=None, html_kwargs={}, translate=True, **conditions):
         """ Render a form select list for this property
 
             "size" is used to limit the length of the list labels
@@ -1863,6 +1986,11 @@ class LinkHTMLProperty(HTMLProperty):
                 (direction, property) where direction is '+' or '-'. A
                 single string with the direction prepended may be used.
                 For example: ('-', 'order'), '+name'.
+            "html_kwargs" specified additional html args for the
+            generated html <select>
+            "translate" indicates if we should do translation of labels
+            using gettext -- this is often desired (e.g. for status
+            labels) but sometimes not.
 
             The remaining keyword arguments are used as conditions for
             filtering the items in the list - they're passed as the
@@ -1873,11 +2001,18 @@ class LinkHTMLProperty(HTMLProperty):
         if not self.is_edit_ok():
             return self.plain(escape=1)
 
+        # Since None indicates the default, we need another way to
+        # indicate "no selection".  We use -1 for this purpose, as
+        # that is the value we use when submitting a form without the
+        # value set.
         if value is None:
             value = self._value
+        elif value == '-1':
+            value = None
 
         linkcl = self._db.getclass(self._prop.classname)
-        l = ['<select name="%s">'%self._formname]
+        l = ['<select %s>'%cgi_escape_attrs(name = self._formname,
+                                            **html_kwargs)]
         k = linkcl.labelprop(1)
         s = ''
         if value is None:
@@ -1891,7 +2026,7 @@ class LinkHTMLProperty(HTMLProperty):
                 else:
                     sort_on = ('+', sort_on)
         else:
-            sort_on = ('+', find_sort_key(linkcl))
+            sort_on = ('+', linkcl.orderprop())
 
         options = [opt
             for opt in linkcl.filter(None, conditions, sort_on, (None, None))
@@ -1901,6 +2036,21 @@ class LinkHTMLProperty(HTMLProperty):
         # make sure we list the current value if it's retired
         if value and value not in options:
             options.insert(0, value)
+
+        if additional:
+            additional_fns = []
+            props = linkcl.getprops()
+            for propname in additional:
+                prop = props[propname]
+                if isinstance(prop, hyperdb.Link):
+                    cl = self._db.getclass(prop.classname)
+                    labelprop = cl.labelprop()
+                    fn = lambda optionid: cl.get(linkcl.get(optionid,
+                                                            propname),
+                                                 labelprop)
+                else:
+                    fn = lambda optionid: linkcl.get(optionid, propname)
+            additional_fns.append(fn)
 
         for optionid in options:
             # get the option value, and if it's None use an empty string
@@ -1924,12 +2074,15 @@ class LinkHTMLProperty(HTMLProperty):
                 lab = lab[:size-3] + '...'
             if additional:
                 m = []
-                for propname in additional:
-                    m.append(linkcl.get(optionid, propname))
-                lab = lab + ' (%s)'%', '.join(map(str, m))
+                for fn in additional_fns:
+                    m.append(str(fn(optionid)))
+                lab = lab + ' (%s)'%', '.join(m)
 
             # and generate
-            lab = cgi.escape(self._(lab))
+            tr = str
+            if translate:
+                tr = self._
+            lab = cgi.escape(tr(lab))
             l.append('<option %svalue="%s">%s</option>'%(s, optionid, lab))
         l.append('</select>')
         return '\n'.join(l)
@@ -1971,9 +2124,10 @@ class MultilinkHTMLProperty(HTMLProperty):
         check = self._db.security.hasPermission
         userid = self._client.userid
         classname = self._prop.classname
-        for value in values:
-            if check('View', userid, classname, itemid=value):
-                yield HTMLItem(self._client, classname, value)
+        if check('Web Access', userid):
+            for value in values:
+                if check('View', userid, classname, itemid=value):
+                    yield HTMLItem(self._client, classname, value)
 
     def __iter__(self):
         """ iterate and return a new HTMLItem
@@ -2013,16 +2167,22 @@ class MultilinkHTMLProperty(HTMLProperty):
         k = linkcl.labelprop(1)
         labels = []
         for v in self._value:
-            label = linkcl.get(v, k)
-            # fall back to designator if label is None
-            if label is None: label = '%s%s'%(self._prop.classname, k)
+            if num_re.match(v):
+                try:
+                    label = linkcl.get(v, k)
+                except IndexError:
+                    label = None
+                # fall back to designator if label is None
+                if label is None: label = '%s%s'%(self._prop.classname, k)
+            else:
+                label = v
             labels.append(label)
         value = ', '.join(labels)
         if escape:
             value = cgi.escape(value)
         return value
 
-    def field(self, size=30, showid=0):
+    def field(self, size=30, showid=0, **kwargs):
         """ Render a form edit field for the property
 
             If not editable, just display the value via plain().
@@ -2031,18 +2191,23 @@ class MultilinkHTMLProperty(HTMLProperty):
             return self.plain(escape=1)
 
         linkcl = self._db.getclass(self._prop.classname)
-        value = self._value[:]
-        # map the id to the label property
-        if not linkcl.getkey():
-            showid=1
-        if not showid:
-            k = linkcl.labelprop(1)
-            value = lookupKeys(linkcl, k, value)
-        value = ','.join(value)
-        return self.input(name=self._formname, size=size, value=value)
+
+        if 'value' not in kwargs:
+            value = self._value[:]
+            # map the id to the label property
+            if not linkcl.getkey():
+                showid=1
+            if not showid:
+                k = linkcl.labelprop(1)
+                value = lookupKeys(linkcl, k, value)
+            value = ','.join(value)
+            kwargs["value"] = value
+
+        return self.input(name=self._formname, size=size, **kwargs)
 
     def menu(self, size=None, height=None, showid=0, additional=[],
-             value=None, sort_on=None, **conditions):
+             value=None, sort_on=None, html_kwargs={}, translate=True,
+             **conditions):
         """ Render a form <select> list for this property.
 
             "size" is used to limit the length of the list labels
@@ -2077,20 +2242,47 @@ class MultilinkHTMLProperty(HTMLProperty):
                 else:
                     sort_on = ('+', sort_on)
         else:
-            sort_on = ('+', find_sort_key(linkcl))
+            sort_on = ('+', linkcl.orderprop())
 
         options = [opt
             for opt in linkcl.filter(None, conditions, sort_on)
             if self._db.security.hasPermission("View", self._client.userid,
                 linkcl.classname, itemid=opt)]
-        height = height or min(len(options), 7)
-        l = ['<select multiple name="%s" size="%s">'%(self._formname, height)]
-        k = linkcl.labelprop(1)
 
         # make sure we list the current values if they're retired
         for val in value:
             if val not in options:
                 options.insert(0, val)
+
+        if not height:
+            height = len(options)
+            if value:
+                # The "no selection" option.
+                height += 1
+            height = min(height, 7)
+        l = ['<select multiple %s>'%cgi_escape_attrs(name = self._formname,
+                                                     size = height,
+                                                     **html_kwargs)]
+        k = linkcl.labelprop(1)
+
+        if value:
+            l.append('<option value="%s">- no selection -</option>'
+                     % ','.join(['-' + v for v in value]))
+
+        if additional:
+            additional_fns = []
+            props = linkcl.getprops()
+            for propname in additional:
+                prop = props[propname]
+                if isinstance(prop, hyperdb.Link):
+                    cl = self._db.getclass(prop.classname)
+                    labelprop = cl.labelprop()
+                    fn = lambda optionid: cl.get(linkcl.get(optionid,
+                                                            propname),
+                                                 labelprop)
+                else:
+                    fn = lambda optionid: linkcl.get(optionid, propname)
+            additional_fns.append(fn)
 
         for optionid in options:
             # get the option value, and if it's None use an empty string
@@ -2111,19 +2303,23 @@ class MultilinkHTMLProperty(HTMLProperty):
                 lab = lab[:size-3] + '...'
             if additional:
                 m = []
-                for propname in additional:
-                    m.append(linkcl.get(optionid, propname))
+                for fn in additional_fns:
+                    m.append(str(fn(optionid)))
                 lab = lab + ' (%s)'%', '.join(m)
 
             # and generate
-            lab = cgi.escape(self._(lab))
+            tr = str
+            if translate:
+                tr = self._
+            lab = cgi.escape(tr(lab))
             l.append('<option %svalue="%s">%s</option>'%(s, optionid,
                 lab))
         l.append('</select>')
         return '\n'.join(l)
 
+
 # set the propclasses for HTMLItem
-propclasses = (
+propclasses = [
     (hyperdb.String, StringHTMLProperty),
     (hyperdb.Number, NumberHTMLProperty),
     (hyperdb.Boolean, BooleanHTMLProperty),
@@ -2132,23 +2328,33 @@ propclasses = (
     (hyperdb.Password, PasswordHTMLProperty),
     (hyperdb.Link, LinkHTMLProperty),
     (hyperdb.Multilink, MultilinkHTMLProperty),
-)
+]
+
+def register_propclass(prop, cls):
+    for index,propclass in enumerate(propclasses):
+        p, c = propclass
+        if prop == p:
+            propclasses[index] = (prop, cls)
+            break
+    else:
+        propclasses.append((prop, cls))
+
 
 def make_sort_function(db, classname, sort_on=None):
-    """Make a sort function for a given class
+    """Make a sort function for a given class.
+
+    The list being sorted may contain mixed ids and labels.
     """
     linkcl = db.getclass(classname)
     if sort_on is None:
-        sort_on = find_sort_key(linkcl)
+        sort_on = linkcl.orderprop()
     def sortfunc(a, b):
-        return cmp(linkcl.get(a, sort_on), linkcl.get(b, sort_on))
+        if num_re.match(a):
+            a = linkcl.get(a, sort_on)
+        if num_re.match(b):
+            b = linkcl.get(b, sort_on)
+        return cmp(a, b)
     return sortfunc
-
-def find_sort_key(linkcl):
-    if linkcl.getprops().has_key('order'):
-        return 'order'
-    else:
-        return linkcl.labelprop()
 
 def handleListCGIValue(value):
     """ Value is either a single item or a list of items. Each item has a
@@ -2231,10 +2437,10 @@ class HTMLRequest(HTMLInputMixin):
             key = '%s%s%d'%(special, name, idx)
             while key in self.form:
                 self.special_char = special
-                fields.append (self.form[key].value)
+                fields.append(self.form.getfirst(key))
                 dirkey = '%s%sdir%d'%(special, name, idx)
                 if dirkey in self.form:
-                    dirs.append(self.form[dirkey].value)
+                    dirs.append(self.form.getfirst(dirkey))
                 else:
                     dirs.append(None)
                 idx += 1
@@ -2245,7 +2451,7 @@ class HTMLRequest(HTMLInputMixin):
             if key in self.form and not fields:
                 fields = handleListCGIValue(self.form[key])
                 if dirkey in self.form:
-                    dirs.append(self.form[dirkey].value)
+                    dirs.append(self.form.getfirst(dirkey))
             if fields: # only try other special char if nothing found
                 break
         for f, d in map(None, fields, dirs):
@@ -2267,12 +2473,16 @@ class HTMLRequest(HTMLInputMixin):
                 self.columns = handleListCGIValue(self.form[name])
                 break
         self.show = support.TruthDict(self.columns)
+        security = self._client.db.security
+        userid = self._client.userid
 
         # sorting and grouping
         self.sort = []
         self.group = []
         self._parse_sort(self.sort, 'sort')
         self._parse_sort(self.group, 'group')
+        self.sort = security.filterSortspec(userid, self.classname, self.sort)
+        self.group = security.filterSortspec(userid, self.classname, self.group)
 
         # filtering
         self.filter = []
@@ -2302,19 +2512,15 @@ class HTMLRequest(HTMLInputMixin):
                         self.filterspec[name] = handleListCGIValue(fv)
                     else:
                         self.filterspec[name] = fv.value
+        self.filterspec = security.filterFilterspec(userid, self.classname,
+            self.filterspec)
 
         # full-text search argument
         self.search_text = None
         for name in ':search_text @search_text'.split():
             if self.form.has_key(name):
                 self.special_char = name[0]
-                try:
-                    self.search_text = self.form[name].value
-                except AttributeError:
-                    # http://psf.upfronthosting.co.za/roundup/meta/issue111
-                    # Multiple search_text, probably some kind of spambot.
-                    # Use first value.
-                    self.search_text = self.form[name][0].value
+                self.search_text = self.form.getfirst(name)
 
         # pagination - size and start index
         # figure batch args
@@ -2322,17 +2528,25 @@ class HTMLRequest(HTMLInputMixin):
         for name in ':pagesize @pagesize'.split():
             if self.form.has_key(name):
                 self.special_char = name[0]
-                self.pagesize = int(self.form[name].value)
+                try:
+                    self.pagesize = int(self.form.getfirst(name))
+                except ValueError:
+                    # not an integer - ignore
+                    pass
 
         self.startwith = 0
         for name in ':startwith @startwith'.split():
             if self.form.has_key(name):
                 self.special_char = name[0]
-                self.startwith = int(self.form[name].value)
+                try:
+                    self.startwith = int(self.form.getfirst(name))
+                except ValueError:
+                    # not an integer - ignore
+                    pass
 
         # dispname
         if self.form.has_key('@dispname'):
-            self.dispname = self.form['@dispname'].value
+            self.dispname = self.form.getfirst('@dispname')
         else:
             self.dispname = None
 
@@ -2424,10 +2638,10 @@ env: %(env)s
         if filter and self.filter:
             add(sc+'filter', ','.join(self.filter))
         if self.classname and filterspec:
-            props = self.client.db.getclass(self.classname).getprops()
+            cls = self.client.db.getclass(self.classname)
             for k,v in self.filterspec.items():
                 if type(v) == type([]):
-                    if isinstance(props[k], hyperdb.String):
+                    if isinstance(cls.get_transitive_prop(k), hyperdb.String):
                         add(k, ' '.join(v))
                     else:
                         add(k, ','.join(v))
@@ -2516,9 +2730,15 @@ function help_window(helpurl, width, height) {
 </script>
 """%self.base
 
-    def batch(self):
+    def batch(self, permission='View'):
         """ Return a batch object for results from the "current search"
         """
+        check = self._client.db.security.hasPermission
+        userid = self._client.userid
+        if not check('Web Access', userid):
+            return Batch(self.client, [], self.pagesize, self.startwith,
+                classname=self.classname)
+
         filterspec = self.filterspec
         sort = self.sort
         group = self.group
@@ -2535,10 +2755,8 @@ function help_window(helpurl, width, height) {
             matches = None
 
         # filter for visibility
-        check = self._client.db.security.hasPermission
-        userid = self._client.userid
         l = [id for id in klass.filter(matches, filterspec, sort, group)
-            if check('View', userid, self.classname, itemid=id)]
+            if check(permission, userid, self.classname, itemid=id)]
 
         # return the batch object, using IDs only
         return Batch(self.client, l, self.pagesize, self.startwith,
@@ -2663,6 +2881,9 @@ class TemplatingUtils:
             raise AttributeError, name
         return self.client.instance.templating_utils[name]
 
+    def keywords_expressions(self, request):
+        return render_keywords_expression_editor(request)
+
     def html_calendar(self, request):
         """Generate a HTML calendar.
 
@@ -2676,7 +2897,9 @@ class TemplatingUtils:
 
         html will simply be a table.
         """
-        date_str  = request.form.getfirst("date", ".")
+        tz = request.client.db.getUserTimezone()
+        current_date = date.Date(".").local(tz)
+        date_str  = request.form.getfirst("date", current_date)
         display   = request.form.getfirst("display", date_str)
         template  = request.form.getfirst("@template", "calendar")
         form      = request.form.getfirst("form")
