@@ -1,0 +1,219 @@
+===========
+Roundup FAQ
+===========
+
+.. contents::
+
+
+Installation
+------------
+
+Living without a mailserver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Remove the nosy reactor - delete the tracker file
+``detectors/nosyreactor.py`` from your tracker home.
+
+
+The cgi-bin is very slow!
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Yep, it sure is. It has to start up Python and load all of the support
+libraries for *every* request.
+
+The solution is to use the built in server (or possibly the mod_python
+or WSGI support).
+
+To make Roundup more seamless with your website, you may place the built
+in server behind apache and link it into your web tree (see below).
+
+
+How do I put Roundup behind Apache
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We have a project (foo) running on ``tracker.example:8080``.
+We want ``http://tracker.example/issues`` to use the roundup server, so we 
+set that up on port 8080 on ``tracker.example`` with the ``config.ini`` line::
+
+  [tracker]
+  ...
+  web = 'http://tracker.example/issues/'
+
+We have a "foo_issues" tracker and we run the server with::
+
+  roundup-server -p 8080 issues=/home/roundup/trackers/issues 
+
+Then, on the Apache machine (eg. redhat 7.3 with apache 1.3), in
+``/etc/httpd/conf/httpd.conf`` uncomment::
+
+  LoadModule proxy_module       modules/libproxy.so
+
+and::
+
+  AddModule mod_proxy.c
+
+Then add::
+
+  # roundup stuff (added manually)
+  <IfModule mod_proxy.c>
+  # proxy through one tracker
+  ProxyPass /issues/ http://tracker.example:8080/issues/
+  # proxy through all tracker(*)
+  #ProxyPass /roundup/ http://tracker.example:8080/
+  </IfModule>
+
+Then restart Apache. Now Apache will proxy the request on to the
+roundup-server.
+
+Note that if you're proxying multiple trackers, you'll need to use the
+second ProxyPass rule described above. It will mean that your TRACKER_WEB
+will change to::
+
+  TRACKER_WEB = 'http://tracker.example/roundup/issues/'
+
+Once you're done, you can firewall off port 8080 from the rest of the world.
+
+Note that in some situations (eg. virtual hosting) you might need to use a
+more complex rewrite rule instead of the simpler ProxyPass above. The
+following should be useful as a starting template::
+
+  # roundup stuff (added manually)
+  <IfModule mod_proxy.c>
+
+  RewriteEngine on
+  
+  # General Roundup
+  RewriteRule ^/roundup$  roundup/    [R]
+  RewriteRule ^/roundup/(.*)$ http://tracker.example:8080/$1   [P,L]
+  
+  # Handle Foo Issues
+  RewriteRule ^/issues$  issues/    [R]
+  RewriteRule ^/issues/(.*)$ http://tracker.example:8080/issues/$1 [P,L]
+  
+  </IfModule>
+
+
+How do I run Roundup through SSL (HTTPS)?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The preferred way of using SSL is to proxy through apache and use its
+SSL service. See the previous question on how to proxy through apache.
+
+The standalone roundup-server now also has SSL support which is still
+considered experimental. For details refer to the documentation of
+roundup server, in particular to the generated configuration file
+generated with ::
+
+    roundup-server --save-config
+
+that describes the needed option in detail. With the standalone server
+now XMLRPC over SSL works, too.
+
+
+Roundup runs very slowly on my XP machine when accessed from the Internet
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The issue is probably related to host name resolution for the client
+performing the request. You can turn off the resolution of the names
+when it's so slow like this. To do so, edit the module
+roundup/scripts/roundup_server.py around line 77 to add the following
+to the RoundupRequestHandler class::
+
+     def address_string(self):
+         return self.client_address[0]
+
+
+Templates
+---------
+
+What is that stuff in the tracker html directory?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This is the template code that Roundup uses to display the various pages.
+This is based upon the template markup language in Zope called, oddly
+enough, "Zope Page Templates". There's documentation in the Roundup
+customisation_ documentation. For more information have a look at:
+
+   http://docs.zope.org/zope2/zope2book/
+
+specifically chapter 10 "Using Zope Page Templates" and chapter 14 "Advanced
+Page Templates".
+
+
+But I just want a select/option list for ....
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Really easy... edit ``html/issue.item.html``. For ``nosy``, change the line
+(around line 69) from::
+
+  <span tal:replace="structure context/nosy/field" />
+
+to::
+
+  <span tal:replace="structure context/nosy/menu" />
+
+For ``assigned to``, this is already done around line 77::
+
+  <td tal:content="structure context/assignedto/menu">assignedto menu</td>
+
+
+
+Great! But now the select/option list is too big
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+That is a little harder (but only a little ;^)
+
+Again, edit ``html/issue.item``. For nosy, change line (around line 69) from::
+
+  <span tal:replace="structure context/nosy/field" />
+
+to::
+
+  <span tal:replace="structure python:context.nosy.menu(height=3)" />
+
+for more information, go and read about Zope Page Templates.
+
+
+Using Roundup
+-------------
+
+I got an error and I cannot reload it!
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you're using Netscape/Mozilla, try holding shift and pressing reload.
+If you're using IE then install Mozilla and try again ;^)
+
+
+I keep getting logged out
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Make sure that the ``tracker`` -> ``web`` setting in your tracker's
+config.ini is set to the URL of the tracker.
+
+I'm getting infinite redirects in the browser
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A wrong value for the ``tracker`` -> ``web`` setting may also result in
+infinite redirects, see http://issues.roundup-tracker.org/issue2537286
+
+
+How is sorting performed, and why does it seem to fail sometimes?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When we sort items in the hyperdb, we use one of a number of methods,
+depending on the properties being sorted on:
+
+1. If it's a String, Number, Date or Interval property, we just sort the
+   scalar value of the property. Strings are sorted case-sensitively.
+2. If it's a Link property, we sort by either the linked item's "order"
+   property (if it has one) or the linked item's "id".
+3. Mulitlinks sort similar to #2, but we start with the first
+   Multilink list item, and if they're the same, we sort by the second item,
+   and so on.
+
+Note that if an "order" property is defined on a Class that is used for
+sorting, all items of that Class *must* have a value against the "order"
+property, or sorting will result in random ordering.
+
+.. _`customisation`: customizing.html
+

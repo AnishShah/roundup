@@ -1,0 +1,34 @@
+.TH ROUNDUP-ADMIN 1 "24 January 2003"
+.SH NAME
+roundup-admin \- administrate roundup trackers
+.SH SYNOPSIS
+\fBroundup-admin\fP [\fIoptions\fP] \fI<command>\fP \fI<arguments>\fP
+.SH OPTIONS
+.TP
+\fB-i\fP \fIinstance home\fP
+specify the issue tracker "home directory" to administer
+.TP
+\fB-u\fP \fIuser\fP[\fB:\fP\fIpassword\fP]
+the user and password to use for commands
+.TP
+\fB-c\fP
+When outputting lists of data, comma-separate them. Same as
+\fB-S ","\fP.
+.TP
+\fB-S\fP \fIstring\fP
+When outputting lists of data, separate items with given string.
+.TP
+\fB-s\fP
+When outputting lists of data, space-separate them. Same as
+\fB-S " "\fP.
+.SH FURTHER HELP
+ roundup-admin -h
+ roundup-admin help                       -- this help
+ roundup-admin help <command>             -- command-specific help
+ roundup-admin help all                   -- all available help
+.SH AUTHOR
+This manpage was written by Bastian Kleineidam
+<calvin@debian.org> for the Debian distribution of roundup.
+
+The main author of roundup is Richard Jones
+<richard@users.sourceforge.net>.
