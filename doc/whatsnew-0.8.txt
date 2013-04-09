@@ -1,0 +1,187 @@
+=========================
+What's New in Roundup 0.8
+=========================
+
+For those completely new to Roundup, you might want to look over the very
+terse features__ page.
+
+__ features.html
+
+.. contents::
+
+In Summary
+==========
+
+(this information copied directly from the ``CHANGES.txt`` file)
+
+XXX this section needs more detail
+
+- create a new RDBMS cursor after committing
+- roundup-admin reindex command may now work on single items or classes
+
+- roundup-server options -g and -u accept both ids and names (sf bug 983769)
+- roundup-server now has a configuration file (-C option)
+- roundup windows service may be installed with command line options
+  recognized by roundup-server (but not tracker specification arguments).
+  Use this to specify server configuration file for the service.
+
+- added option to turn off registration confirmation via email
+  ("instant_registration" in config) (sf rfe 922209)
+
+
+
+Performance improvements
+========================
+
+We don't try to import all backends in backends.__init__ unless we *want*
+to.
+
+Roundup may now use the Apache mod_python interface (see installation.txt)
+which is much faster than the standard cgi-bin and a little faster than
+roundup-server.
+
+There is now an experimental multi-thread server which should allow faster
+concurrent access.
+
+In the hyperdb, a few other speedups were implemented, such as:
+
+- record journaltag lookup ("fixes" sf bug 998140)
+- unless in debug mode, keep a single persistent connection through a
+  single web or mailgw request.
+- remove "manual" locking of sqlite database
+
+
+Logging of internal messages
+============================
+
+Roundup's previously ad-hoc logging of events has been cleaned up and is
+now configured in a single place in the tracker configuration file.
+
+The `customization documentation`_ has more details on how this is
+configured.
+
+roundup-mailgw now logs fatal exceptions rather than mailing them to admin.
+
+
+Security Changes
+================
+
+``security.addPermissionToRole()`` has been extended to allow skipping the
+separate getPermission call.
+
+
+Password Storage
+----------------
+
+Added MD5 scheme for password hiding. This extends the existing SHA and
+crypt methods and is useful if you have an existing MD5 password database.
+
+
+Permission Definitions
+----------------------
+
+Permissions may now be defined on a per-property basis, allowing access to
+only specific properties on items. 
+
+Permissions may also have code attached which is executed to check whether
+the Permission is valid for the current user and item.
+
+Permissions are now automatically checked when information is rendered
+through the web. This includes:
+
+1. View checks for properties when being rendered via the ``plain()`` or
+   similar methods. If the check fails, the text "[hidden]" will be
+   displayed.
+2. Edit checks for properties when the edit field is being rendered via
+   the ``field()`` or similar methods. If the check fails, the property
+   will be rendered via the ``plain()`` method (see point 1. for additional
+   checking performed)
+3. View checks are performed in index pages for each item being displayed
+   such that if the user does not have permission, the row is not rendered.
+
+
+Extending Roundup
+=================
+
+To write extension code for Roundup you place a file in the tracker home
+``extensions`` directory. See the `customization documentation`_ for more
+information about how this is done.
+
+
+8-bit character set support in Web interface
+============================================
+
+This is used to override the UTF-8 default. It may be overridden in both
+forms and a browser cookie.
+
+- In forms, use the ``@charset`` variable.
+- To use the cookie override, have the ``roundup_charset`` cookie set.
+
+In both cases, the value is a valid charset name (eg. ``utf-8`` or
+``kio8-r``).
+
+Inside Roundup, all strings are stored and processed in utf-8.
+Unfortunately, some older browsers do not work properly with
+utf-8-encoded pages (e.g. Netscape Navigator 4 displays wrong
+characters in form fields).  This version allows to change
+the character set for http transfers.  To do so, you may add
+the following code to your ``page.html`` template::
+
+ <tal:block define="uri string:${request/base}${request/env/PATH_INFO}">
+  <a tal:attributes="href python:request.indexargs_url(uri,
+   {'@charset':'utf-8'})">utf-8</a>
+  <a tal:attributes="href python:request.indexargs_url(uri,
+   {'@charset':'koi8-r'})">koi8-r</a>
+ </tal:block>
+
+(substitute ``koi8-r`` with the appropriate charset for your language).
+Charset preference is kept in the browser cookie ``roundup_charset``.
+
+``meta http-equiv`` lines added to the tracker templates in version 0.6.0
+should be changed to include actual character set name::
+
+ <meta http-equiv="Content-Type"
+  tal:attributes="content string:text/html;; charset=${request/client/charset}"
+ />
+
+Actual charset is also sent in the http header.
+
+
+Web Interface Miscellanea
+=========================
+
+The web interface has seen some changes:
+
+Editing
+
+Templating
+  We implement __nonzero__ for HTMLProperty - properties may now be used in
+  boolean conditions (eg ``tal:condition="issue/nosy"`` will be false if
+  the nosy list is empty).
+
+  We added a default argument to the DateHTMLProperty.field method, and an
+  optional Interval (string or object) to the DateHTMLProperty.now
+
+  We've added a multiple selection Link/Multilink search field macro to the
+  default classic page.html template.
+
+  We relaxed hyperlinking in web interface (accept "issue123" or "Issue 123")
+
+  The listing popup may be used in query forms.
+
+Standard templates
+  We hide "(list)" popup links when issue is only viewable
+
+  The issue search page now has fields to allow no sorting / grouping of
+  the results.
+
+  The default page.html template now has a search box in the top right
+  corner which performs a full-text search of issues. The "show issue"
+  quick jump form in the sidebar has had its font size reduced to use less
+  space.
+
+Web server
+  The builtin web server may now perform HTTP Basic Authentication by
+  itself.
+
+.. _`customization documentation`: customizing.html

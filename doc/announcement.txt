@@ -1,0 +1,123 @@
+I'm proud to release version 1.4.21 of Roundup which has been possible
+due to the help of several contributors.  This release introduces some
+minor features and, as usual, fixes some bugs:
+
+Features:
+
+- issue2550782: Added a new irker detector to send notifications on IRC
+  when an issue is created or messages are added. (Ezio Melotti)
+- Beta version of responsive templates using devel schema
+  and Twitter Bootstrap for styling (Pradip Caulagi)
+- pywin32 is no longer required to run on Windows (anatoly techtonik)
+- Rewritten portalocker.py logic in ctypes for Windows (anatoly techtonik)
+- Add an interface to register clearCache callbacks in roundupdb.
+  Sometimes complicated computations may require an application cache.
+  This application can now register a callback to clear the application
+  cache, because roundup knows better when to clear it (usually when a
+  transaction ends, either with rollback or with commit). The interface
+  for this is currently considered experimental. The current interface
+  is registerClearCacheCallback(self, method, param) where method is
+  called with param as the only parameter.  (Ralf Schlatterbeck)
+- Add a script to remove file-spam from a tracker, see
+  scripts/spam-remover. (Ralf Schlatterbeck)
+
+Fixed:
+
+- issue2550765: Don't show links in calendar that will fail.
+  Found and fixed by Cedric Krier. (Bernhard)
+- issue2550765: use <meta name="robots" content="noindex, nofollow"> in the
+  _generic.calendar.html to prevent robots to follow all the links in the
+  calendar. (Ezio Melotti)
+- "BaseException.with_traceback" is not available on Python 2, so use
+  "raise E, V, T" instead of "raise E(V).with_traceback(T)".  This change was
+  originally introduced in 74476eaac38a. (Ezio Melotti)
+- issue2550759: Trailing punctuation is no longer included when URLs are
+  converted to links. (Ezio Melotti)
+- issue2550574: Restore sample detectors removed in roundup 1.4.9
+  (Thomas Arendsen Hein)
+- Prevent AttributeError when removing all roles of a user
+  (Thomas Arendsen Hein)
+- issue2550762 Minor Documentation fix in doc/developers.txt, thanks
+  to W. Trevor King. (Bernhard Reiter)
+- issue2550766: Minor formatting issues in the docs for date properties,
+  thanks John Kristensen. (Bernhard Reiter)
+- issue2550738: Fixes for various documentation typoes,
+  thanks Nathan Russell. (John Kristensen)
+- issue2550756: Fix "oder" typo in mailer.Mailer.bounce_message docstring,
+  thanks W. Trevor King (John Kristensen)
+- Fix basic authentication: instatiating the login action would fail if
+  the user is not set. We now first set the user to anonymous and then
+  try basic authentication if enabled. (Ralf Schlatterbeck)
+- Fix xmlrpc permissions for lookup method: Allow if the key attribute
+  is either searchable or viewable, don't check id attribute (Ralf
+  Schlatterbeck)
+- Fix installation documentation (section Prerequisites) to require at
+  least python 2.5, thanks to John P. Rouillard for discovering this.
+  (committed by Ralf Schlatterbeck)
+- Fix version_check.py to require at least python 2.5 (anatoly techtonik)
+- Fixing the download button re-activating the cheeseshop plugin in the 
+  sphinx config. Thanks to Richard for the hint. (Bernhard Reiter)
+- issue2550783 devel template's schema.py permissions referenced the
+  organization property for the user, but the property is called
+  organisation. Thanks to Pradip Caulagi. (committed by John Rouillard)
+- issue2550749 - the xmlrpc interface is invoked on content type
+  and not url path. Sending any text/xml data to roundup results in
+  invoking the xml-rpc interface, but a REST or other interface could
+  also consume xml data and do something different. So require the use
+  of 'http(s)://.../xmlrpc' uri to trigger the xmlrpc interface.
+  (John Rouillard)
+- issue2550774: Remove generating documentation with rst2html, and update the
+  README.txt with how to create the html docs using sphinx, thanks Kai Storbeck
+  (John Kristensen)
+- issue2550774: Include doc/conf.py in the release tarball, so people can build
+  their own documentation in html, thanks Kai Storbeck (John Kristensen)
+- issue2550774: Update website/www/Makefile to symlink COPYING.txt so "make"
+  works again, thanks Kai Storbeck (John Kristensen)
+- issue2550760: Several improvements to the manpages
+  thanks Kai Storbeck & Bastian Kleineidam (John Kristensen)
+
+If you're upgrading from an older version of Roundup you *must* follow
+the "Software Upgrade" guidelines given in the maintenance documentation.
+
+Roundup requires python 2.5 or later (but not 3+) for correct operation.
+
+To give Roundup a try, just download (see below), unpack and run::
+
+    python demo.py
+
+Release info and download page:
+     http://pypi.python.org/pypi/roundup
+Source and documentation is available at the website:
+     http://roundup-tracker.org/
+Mailing lists - the place to ask questions:
+     http://sourceforge.net/mail/?group_id=31577
+
+
+About Roundup
+=============
+
+Roundup is a simple-to-use and -install issue-tracking system with
+command-line, web and e-mail interfaces. It is based on the winning design
+from Ka-Ping Yee in the Software Carpentry "Track" design competition.
+
+Note: Ping is not responsible for this project. The contact for this
+project is richard@users.sourceforge.net.
+
+Roundup manages a number of issues (with flexible properties such as
+"description", "priority", and so on) and provides the ability to:
+
+(a) submit new issues,
+(b) find and edit existing issues, and
+(c) discuss issues with other participants.
+
+The system will facilitate communication among the participants by managing
+discussions and notifying interested parties when issues are edited. One of
+the major design goals for Roundup that it be simple to get going. Roundup
+is therefore usable "out of the box" with any python 2.5+ (but not 3+)
+installation. It doesn't even need to be "installed" to be operational,
+though an install script is provided.
+
+It comes with two issue tracker templates (a classic bug/feature tracker and
+a minimal skeleton) and four database back-ends (anydbm, sqlite, mysql
+and postgresql).
+
