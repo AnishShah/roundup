@@ -1,0 +1,26 @@
+=======================================================
+Roundup: an Issue-Tracking System for Knowledge Workers
+=======================================================
+
+For how to contact the community see http://www.roundup-tracker.org .
+
+Contents
+========
+
+.. toctree::
+   :maxdepth: 2
+
+   features
+   installation
+   upgrading
+   FAQ
+   user_guide
+   customizing
+   admin_guide
+   xmlrpc
+   original design <design>
+   developers
+   tracker_templates
+   glossary
+   acknowledgements
+   license

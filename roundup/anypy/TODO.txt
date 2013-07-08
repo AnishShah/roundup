@@ -1,0 +1,4 @@
+Python compatiblity TODO
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Remove sets_ included for Python 2.3 compatibility.

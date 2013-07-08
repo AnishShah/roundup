@@ -1,0 +1,86 @@
+.TH ROUNDUP-MAILGW 1 "24 January 2003"
+.SH NAME
+roundup-mailgw \- mail gateway for roundup
+.SH SYNOPSIS
+\fBroundup-mailgw\fP \fIinstance_home\fP [\fImethod\fP]
+.SH OPTIONS
+.TP
+\fB-v\fP
+Print version and exit.
+.TP
+\fB-C\fP \fIhyperdb class\fP
+specify a tracker class - one of msg (the default), issue, file, user - to
+manipulate with -S options
+.TP
+\fB-S\fP \fIproperty\fP\fB=\fP\fIvalue\fP[\fB;\fP\fIproperty\fP\fB=\fP\fIvalue\fP] \fIpairs\fP
+specify the values to set on the class specified by -C using the same
+format as the Subject line property manipulations
+.SH DESCRIPTION
+The roundup mail gateway may be called in one of three ways:
+.IP \(bu
+with an instance home as the only argument,
+.IP \(bu
+with both an instance home and a mail spool file, or
+.IP \(bu
+with both an instance home and a pop server account.
+.PP
+\fBPIPE\fP
+.br
+In the first case, the mail gateway reads a single message from the
+standard input and submits the message to the roundup.mailgw module.
+
+\fBUNIX mailbox\fP
+.br
+In the second case, the gateway reads all messages from the mail spool
+file and submits each in turn to the roundup.mailgw module. The file is
+emptied once all messages have been successfully handled. The file is
+specified as:
+ \fImailbox /path/to/mailbox\fP
+
+In all of the following the username and password can be stored in a
+~/.netrc file. In this case only the server name need be specified on
+the command-line.
+
+The username and/or password will be prompted for if not supplied on
+the command-line or in ~/.netrc.
+
+\fBPOP\fP
+.br
+In the third case, the gateway reads all messages from the POP server
+specified and submits each in turn to the roundup.mailgw module. The
+server is specified as:
+ \fBpop\fP \fIusername\fP\fB:\fP\fIpassword\fP\fB@\fP\fIserver\fP
+.br
+The username and password may be omitted:
+ \fBpop\fP \fIusername\fP\fB@\fP\fIserver\fP
+ \fBpop\fP \fIserver\fP
+.br
+are both valid. The username and/or password will be prompted for if
+not supplied on the command-line.
+
+\fBAPOP\fP
+.br
+Same as POP, but using Authenticated POP:
+ \fBapop\fP \fIusername\fP\fB:\fP\fIpassword\fP\fB@\fP\fIserver\fP
+
+\fBIMAP\fP
+.br
+Connect to an IMAP server. This supports the same notation as that of
+POP mail.
+ \fBimap\fP \fIusername\fP\fB:\fP\fIpassword\fP\fB@\fP\fIserver\fP
+.br
+It also allows you to specify a specific mailbox other than INBOX using
+this format:
+ \fBimap\fP \fIusername\fP\fB:\fP\fIpassword\fP\fB@\fP\fIserver mailbox\fP
+
+\fBIMAPS\fP
+.br
+Connect to an IMAP server over ssl.
+This supports the same notation as IMAP.
+ \fBimaps\fP \fIusername\fP\fB:\fP\fIpassword\fP\fB@\fP\fIserver\fP [\fImailbox\fP]
+.SH AUTHOR
+This manpage was written by Bastian Kleineidam
+<calvin@debian.org> for the Debian distribution of roundup.
+
+The main author of roundup is Richard Jones
+<richard@users.sourceforge.net>.
