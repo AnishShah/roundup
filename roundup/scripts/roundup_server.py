@@ -251,7 +251,7 @@ class RoundupRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         else:
             return self.run_cgi()
 
-    do_GET = do_POST = do_HEAD = run_cgi_outer
+    do_GET = do_POST = do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = run_cgi_outer
 
     def index(self):
         ''' Print up an index of the available trackers

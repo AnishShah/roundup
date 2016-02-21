@@ -22,6 +22,7 @@ from roundup.cgi.form_parser import FormParser
 from roundup.mailer import Mailer, MessageSendError, encode_quopri
 from roundup.cgi import accept_language
 from roundup import xmlrpc
+from roundup import rest
 
 from roundup.anypy.cookie_ import CookieError, BaseCookie, SimpleCookie, \
     get_cookie_date
@@ -378,6 +379,8 @@ class Client:
         try:
             if self.path == 'xmlrpc':
                 self.handle_xmlrpc()
+            elif self.path == 'rest' or self.path[:5] == 'rest/':
+                self.handle_rest()
             else:
                 self.inner_main()
         finally:
@@ -416,6 +419,24 @@ class Client:
         output = handler.dispatch(input)
 
         self.setHeader("Content-Type", "text/xml")
+        self.setHeader("Content-Length", str(len(output)))
+        self.write(output)
+
+    def handle_rest(self):
+        # Set the charset and language
+        self.determine_charset()
+        self.determine_language()
+        # Open the database as the correct user.
+        # TODO: add everything to RestfulDispatcher
+        self.determine_user()
+        self.check_anonymous_access()
+
+        # Call rest library to handle the request
+        handler = rest.RestfulInstance(self, self.db)
+        output = handler.dispatch(self.env['REQUEST_METHOD'], self.path,
+                                  self.form)
+
+        # self.setHeader("Content-Type", "text/xml")
         self.setHeader("Content-Length", str(len(output)))
         self.write(output)
 
