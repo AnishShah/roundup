@@ -238,66 +238,6 @@ class RestfulInstance(object):
         self.base_path = '%s://%s/%s/rest' % (protocol, host, tracker)
         self.data_path = self.base_path + '/data'
 
-    def props_from_args(self, cl, args, itemid=None):
-        """Construct a list of properties from the given arguments,
-        and return them after validation.
-
-        Args:
-            cl (string): class object of the resource
-            args (list): the submitted form of the user
-            itemid (string, optional): itemid of the object
-
-        Returns:
-            dict: dictionary of validated properties
-
-        """
-        class_props = cl.properties.keys()
-        props = {}
-        # props = dict.fromkeys(class_props, None)
-
-        for arg in args:
-            key = arg.name
-            value = arg.value
-            if key not in class_props:
-                continue
-            props[key] = self.prop_from_arg(cl, key, value, itemid)
-
-        return props
-
-    def prop_from_arg(self, cl, key, value, itemid=None):
-        """Construct a property from the given argument,
-        and return them after validation.
-
-        Args:
-            cl (string): class object of the resource
-            key (string): attribute key
-            value (string): attribute value
-            itemid (string, optional): itemid of the object
-
-        Returns:
-            value: value of validated properties
-
-        """
-        prop = None
-        if isinstance(key, unicode):
-            try:
-                key = key.encode('ascii')
-            except UnicodeEncodeError:
-                raise UsageError(
-                    'argument %r is no valid ascii keyword' % key
-                )
-        if isinstance(value, unicode):
-            value = value.encode('utf-8')
-        if value:
-            try:
-                prop = hyperdb.rawToHyperdb(
-                    self.db, cl, itemid, key, value
-                )
-            except hyperdb.HyperdbValueError, msg:
-                raise UsageError(msg)
-
-        return prop
-
     def error_obj(self, status, msg, source=None):
         """Return an error object"""
         self.client.response_code = status
@@ -309,59 +249,6 @@ class RestfulInstance(object):
         }
         if source is not None:
             result['error']['source'] = source
-
-        return result
-
-    def patch_data(self, op, old_val, new_val):
-        """Perform patch operation based on old_val and new_val
-
-        Args:
-            op (string): PATCH operation: add, replace, remove
-            old_val: old value of the property
-            new_val: new value of the property
-
-        Returns:
-            result (string): value after performed the operation
-        """
-        # add operation: If neither of the value is None, use the other one
-        #                Otherwise, concat those 2 value
-        if op == 'add':
-            if old_val is None:
-                result = new_val
-            elif new_val is None:
-                result = old_val
-            else:
-                result = old_val + new_val
-        # Replace operation: new value is returned
-        elif op == 'replace':
-            result = new_val
-        # Remove operation:
-        #   if old_val is not a list/dict, change it to None
-        #   if old_val is a list/dict, but the parameter is empty,
-        #       change it to none
-        #   if old_val is a list/dict, and parameter is not empty
-        #       proceed to remove the values from parameter from the list/dict
-        elif op == 'remove':
-            if isinstance(old_val, list):
-                if new_val is None:
-                    result = []
-                elif isinstance(new_val, list):
-                    result = [x for x in old_val if x not in new_val]
-                else:
-                    if new_val in old_val:
-                        old_val.remove(new_val)
-            elif isinstance(old_val, dict):
-                if new_val is None:
-                    result = {}
-                elif isinstance(new_val, dict):
-                    for x in new_val:
-                        old_val.pop(x, None)
-                else:
-                    old_val.pop(new_val, None)
-            else:
-                result = None
-        else:
-            raise UsageError('PATCH Operation %s is not allowed' % op)
 
         return result
 
