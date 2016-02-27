@@ -52,11 +52,8 @@ def _data_decorator(func):
             exc, val, tb = sys.exc_info()
             code = 400
             ts = time.ctime()
-            if self.client.request.DEBUG_MODE:
-                data = val
-            else:
-                data = '%s: An error occurred. Please check the server log' \
-                       ' for more information.' % ts
+            data = '%s: An error occurred. Please check the server log' \
+                   ' for more information.' % ts
             # out to the logfile
             print 'EXCEPTION AT', ts
             traceback.print_exc()
@@ -466,7 +463,7 @@ class RestfulInstance(object):
             'View', self.db.getuid(), class_name, itemid=item_id
         ):
             raise Unauthorised(
-                'Permission to view %s%s denied' % (class_name, item_id)
+                'Permission to view %s/%s denied' % (class_name, item_id)
             )
 
         class_obj = self.db.getclass(class_name)
@@ -487,7 +484,7 @@ class RestfulInstance(object):
                 (prop_name, class_obj.get(item_id, prop_name))
                 for prop_name in props
                 if self.db.security.hasPermission(
-                    'View', self.db.getuid(), class_name, prop_name,
+                    'View', self.db.getuid(), class_name, prop_name, item_id
                 )
             ]
         except KeyError, msg:
@@ -529,7 +526,7 @@ class RestfulInstance(object):
             'View', self.db.getuid(), class_name, attr_name, item_id
         ):
             raise Unauthorised(
-                'Permission to view %s%s %s denied' %
+                'Permission to view %s/%s %s denied' %
                 (class_name, item_id, attr_name)
             )
 

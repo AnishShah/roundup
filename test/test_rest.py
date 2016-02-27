@@ -38,7 +38,28 @@ class TestCase(unittest.TestCase):
 
         self.db.commit()
         self.db.close()
-        self.db = self.instance.open('joe')
+
+        env = {
+            'PATH_INFO': 'http://localhost/rounduptest/rest/',
+            'HTTP_HOST': 'localhost',
+            'TRACKER_NAME': 'rounduptest'
+        }
+        self.dummy_client = client.Client(self.instance, None, env, [], None)
+        self.empty_form = cgi.FieldStorage()
+
+    def tearDown(self):
+        self.db.close()
+        try:
+            shutil.rmtree(self.dirname)
+        except OSError, error:
+            if error.errno not in (errno.ENOENT, errno.ESRCH):
+                raise
+
+    def open(self, user='joe'):
+        """
+        Opens database as given user.
+        """
+        self.db = self.instance.open(user)
 
         self.db.tx_Source = 'web'
 
@@ -51,30 +72,14 @@ class TestCase(unittest.TestCase):
         vars = {}
         execfile(os.path.join(thisdir, "tx_Source_detector.py"), vars)
         vars['init'](self.db)
-
-        env = {
-            'PATH_INFO': 'http://localhost/rounduptest/rest/',
-            'HTTP_HOST': 'localhost',
-            'TRACKER_NAME': 'rounduptest'
-        }
-        self.dummy_client = client.Client(self.instance, None, env, [], None)
-        self.empty_form = cgi.FieldStorage()
-
         self.server = RestfulInstance(self.dummy_client, self.db)
 
-    def tearDown(self):
-        self.db.close()
-        try:
-            shutil.rmtree(self.dirname)
-        except OSError, error:
-            if error.errno not in (errno.ENOENT, errno.ESRCH):
-                raise
-
-    def testGet(self):
+    def testGetSelf(self):
         """
         Retrieve all three users
         obtain data for 'joe'
         """
+        self.open()
         # Retrieve all three users.
         results = self.server.get_collection('user', self.empty_form)
         self.assertEqual(self.dummy_client.response_code, 200)
@@ -94,11 +99,48 @@ class TestCase(unittest.TestCase):
         self.assertEqual(self.dummy_client.response_code, 200)
         self.assertEqual(results['data']['data'], 'joe')
 
+    def testGetAdmin(self):
+        """
+        Read admin data.
+        """
+        self.open()
+        results = self.server.get_element('user', '1', self.empty_form)
+        self.assertEqual(self.dummy_client.response_code, 200)
+        self.assertFalse(results['data']['attributes'].has_key('openids'))
+        self.assertFalse(results['data']['attributes'].has_key('password'))
+
+    def testGetSelfAttribute(self):
+        """
+        Read admin data.
+        """
+        self.open()
+        results = self.server.get_attribute('user', self.joeid, 'password', self.empty_form)
+        self.assertEqual(self.dummy_client.response_code, 200)
+        self.assertIsNotNone(results['data']['data'])
+
+    def testGetAdminAttribute(self):
+        """
+        Read admin data.
+        """
+        self.open()
+        # Retrieve all three users.
+        results = self.server.get_attribute('user', '1', 'password', self.empty_form)
+        self.assertEqual(self.dummy_client.response_code, 403)
+
+    def testGetAnonymous(self):
+        """
+        Anonymous should not get users.
+        """
+        self.open('anonymous')
+        results = self.server.get_collection('user', self.empty_form)
+        self.assertEqual(self.dummy_client.response_code, 403)
+
     def testFilter(self):
         """
         Retrieve all three users
         obtain data for 'joe'
         """
+        self.open()
         # create sample data
         try:
             self.db.status.create(name='open')
@@ -193,6 +235,7 @@ class TestCase(unittest.TestCase):
         Retrieve all three users
         obtain data for 'joe'
         """
+        self.open()
         # create sample data
         for i in range(0, random.randint(5, 10)):
             self.db.issue.create(title='foo' + str(i))
@@ -236,272 +279,6 @@ class TestCase(unittest.TestCase):
         results = self.server.get_collection('issue', form)
         self.assertEqual(self.dummy_client.response_code, 200)
         self.assertEqual(len(results['data']), 0)
-
-    def testPut(self):
-        """
-        Change joe's 'realname'
-        Check if we can't change admin's detail
-        """
-        # change Joe's realname via attribute uri
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('data', 'Joe Doe Doe')
-        ]
-        results = self.server.put_attribute(
-            'user', self.joeid, 'realname', form
-        )
-        results = self.server.get_attribute(
-            'user', self.joeid, 'realname', self.empty_form
-        )
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(results['data']['data'], 'Joe Doe Doe')
-
-        # Reset joe's 'realname'.
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('realname', 'Joe Doe')
-        ]
-        results = self.server.put_element('user', self.joeid, form)
-        results = self.server.get_element('user', self.joeid, self.empty_form)
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(results['data']['attributes']['realname'], 'Joe Doe')
-
-        # check we can't change admin's details
-        results = self.server.put_element('user', '1', form)
-        self.assertEqual(self.dummy_client.response_code, 403)
-        self.assertEqual(results['error']['status'], 403)
-
-    def testPost(self):
-        """
-        Post a new issue with title: foo
-        Verify the information of the created issue
-        """
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('title', 'foo')
-        ]
-        results = self.server.post_collection('issue', form)
-        self.assertEqual(self.dummy_client.response_code, 201)
-        issueid = results['data']['id']
-        results = self.server.get_element('issue', issueid, self.empty_form)
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(results['data']['attributes']['title'], 'foo')
-        self.assertEqual(self.db.issue.get(issueid, "tx_Source"), 'web')
-
-    def testPostFile(self):
-        """
-        Post a new file with content: hello\r\nthere
-        Verify the information of the created file
-        """
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('content', 'hello\r\nthere')
-        ]
-        results = self.server.post_collection('file', form)
-        self.assertEqual(self.dummy_client.response_code, 201)
-        fileid = results['data']['id']
-        results = self.server.get_element('file', fileid, self.empty_form)
-        results = results['data']
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(results['attributes']['content'], 'hello\r\nthere')
-
-    def testAuthDeniedPut(self):
-        """
-        Test unauthorized PUT request
-        """
-        # Wrong permissions (caught by roundup security module).
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('realname', 'someone')
-        ]
-        results = self.server.put_element('user', '1', form)
-        self.assertEqual(self.dummy_client.response_code, 403)
-        self.assertEqual(results['error']['status'], 403)
-
-    def testAuthDeniedPost(self):
-        """
-        Test unauthorized POST request
-        """
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('username', 'blah')
-        ]
-        results = self.server.post_collection('user', form)
-        self.assertEqual(self.dummy_client.response_code, 403)
-        self.assertEqual(results['error']['status'], 403)
-
-    def testAuthAllowedPut(self):
-        """
-        Test authorized PUT request
-        """
-        self.db.setCurrentUser('admin')
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('realname', 'someone')
-        ]
-        try:
-            self.server.put_element('user', '2', form)
-        except Unauthorised, err:
-            self.fail('raised %s' % err)
-        finally:
-            self.db.setCurrentUser('joe')
-
-    def testAuthAllowedPost(self):
-        """
-        Test authorized POST request
-        """
-        self.db.setCurrentUser('admin')
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('username', 'blah')
-        ]
-        try:
-            self.server.post_collection('user', form)
-        except Unauthorised, err:
-            self.fail('raised %s' % err)
-        finally:
-            self.db.setCurrentUser('joe')
-
-    def testDeleteAttributeUri(self):
-        """
-        Test Delete an attribute
-        """
-        # create a new issue with userid 1 in the nosy list
-        issue_id = self.db.issue.create(title='foo', nosy=['1'])
-
-        # remove the title and nosy
-        results = self.server.delete_attribute(
-            'issue', issue_id, 'title', self.empty_form
-        )
-        self.assertEqual(self.dummy_client.response_code, 200)
-
-        results = self.server.delete_attribute(
-            'issue', issue_id, 'nosy', self.empty_form
-        )
-        self.assertEqual(self.dummy_client.response_code, 200)
-
-        # verify the result
-        results = self.server.get_element('issue', issue_id, self.empty_form)
-        results = results['data']
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(len(results['attributes']['nosy']), 0)
-        self.assertListEqual(results['attributes']['nosy'], [])
-        self.assertEqual(results['attributes']['title'], None)
-
-    def testPatchAdd(self):
-        """
-        Test Patch op 'Add'
-        """
-        # create a new issue with userid 1 in the nosy list
-        issue_id = self.db.issue.create(title='foo', nosy=['1'])
-
-        # add userid 2 to the nosy list
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('op', 'add'),
-            cgi.MiniFieldStorage('nosy', '2')
-        ]
-        results = self.server.patch_element('issue', issue_id, form)
-        self.assertEqual(self.dummy_client.response_code, 200)
-
-        # verify the result
-        results = self.server.get_element('issue', issue_id, self.empty_form)
-        results = results['data']
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(len(results['attributes']['nosy']), 2)
-        self.assertListEqual(results['attributes']['nosy'], ['1', '2'])
-
-    def testPatchReplace(self):
-        """
-        Test Patch op 'Replace'
-        """
-        # create a new issue with userid 1 in the nosy list and status = 1
-        issue_id = self.db.issue.create(title='foo', nosy=['1'], status='1')
-
-        # replace userid 2 to the nosy list and status = 3
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('op', 'replace'),
-            cgi.MiniFieldStorage('nosy', '2'),
-            cgi.MiniFieldStorage('status', '3')
-        ]
-        results = self.server.patch_element('issue', issue_id, form)
-        self.assertEqual(self.dummy_client.response_code, 200)
-
-        # verify the result
-        results = self.server.get_element('issue', issue_id, self.empty_form)
-        results = results['data']
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(results['attributes']['status'], '3')
-        self.assertEqual(len(results['attributes']['nosy']), 1)
-        self.assertListEqual(results['attributes']['nosy'], ['2'])
-
-    def testPatchRemoveAll(self):
-        """
-        Test Patch Action 'Remove'
-        """
-        # create a new issue with userid 1 and 2 in the nosy list
-        issue_id = self.db.issue.create(title='foo', nosy=['1', '2'])
-
-        # remove the nosy list and the title
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('op', 'remove'),
-            cgi.MiniFieldStorage('nosy', ''),
-            cgi.MiniFieldStorage('title', '')
-        ]
-        results = self.server.patch_element('issue', issue_id, form)
-        self.assertEqual(self.dummy_client.response_code, 200)
-
-        # verify the result
-        results = self.server.get_element('issue', issue_id, self.empty_form)
-        results = results['data']
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(results['attributes']['title'], None)
-        self.assertEqual(len(results['attributes']['nosy']), 0)
-        self.assertEqual(results['attributes']['nosy'], [])
-
-    def testPatchAction(self):
-        """
-        Test Patch Action 'Action'
-        """
-        # create a new issue with userid 1 and 2 in the nosy list
-        issue_id = self.db.issue.create(title='foo')
-
-        # execute action retire
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('op', 'action'),
-            cgi.MiniFieldStorage('action_name', 'retire')
-        ]
-        results = self.server.patch_element('issue', issue_id, form)
-        self.assertEqual(self.dummy_client.response_code, 200)
-
-        # verify the result
-        self.assertTrue(self.db.issue.is_retired(issue_id))
-
-    def testPatchRemove(self):
-        """
-        Test Patch Action 'Remove' only some element from a list
-        """
-        # create a new issue with userid 1, 2, 3 in the nosy list
-        issue_id = self.db.issue.create(title='foo', nosy=['1', '2', '3'])
-
-        # remove the nosy list and the title
-        form = cgi.FieldStorage()
-        form.list = [
-            cgi.MiniFieldStorage('op', 'remove'),
-            cgi.MiniFieldStorage('nosy', '1, 2'),
-        ]
-        results = self.server.patch_element('issue', issue_id, form)
-        self.assertEqual(self.dummy_client.response_code, 200)
-
-        # verify the result
-        results = self.server.get_element('issue', issue_id, self.empty_form)
-        results = results['data']
-        self.assertEqual(self.dummy_client.response_code, 200)
-        self.assertEqual(len(results['attributes']['nosy']), 1)
-        self.assertEqual(results['attributes']['nosy'], ['3'])
 
 
 def get_obj(path, id):
