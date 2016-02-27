@@ -589,69 +589,6 @@ class RestfulInstance(object):
         )
         return 204, ""
 
-    @Routing.route("/summary")
-    @_data_decorator
-    def summary(self, input):
-        """Get a summary of resource from class URI.
-
-        This function returns only items have View permission
-        class_name should be valid already
-
-        Args:
-            class_name (string): class name of the resource (Ex: issue, msg)
-            input (list): the submitted form of the user
-
-        Returns:
-            int: http status code 200 (OK)
-            list:
-        """
-        if not self.db.security.hasPermission(
-            'View', self.db.getuid(), 'issue'
-        ) and not self.db.security.hasPermission(
-            'View', self.db.getuid(), 'status'
-        ) and not self.db.security.hasPermission(
-            'View', self.db.getuid(), 'issue'
-        ):
-            raise Unauthorised('Permission to view summary denied')
-
-        old = date.Date('-1w')
-
-        created = []
-        summary = {}
-        messages = []
-
-        # loop through all the recently-active issues
-        for issue_id in self.db.issue.filter(None, {'activity': '-1w;'}):
-            num = 0
-            status_name = self.db.status.get(
-                self.db.issue.get(issue_id, 'status'),
-                'name'
-            )
-            issue_object = {
-                'id': issue_id,
-                'link': self.base_path + 'issue' + issue_id,
-                'title': self.db.issue.get(issue_id, 'title')
-            }
-            for x, ts, uid, action, data in self.db.issue.history(issue_id):
-                if ts < old:
-                    continue
-                if action == 'create':
-                    created.append(issue_object)
-                elif action == 'set' and 'messages' in data:
-                    num += 1
-            summary.setdefault(status_name, []).append(issue_object)
-            messages.append((num, issue_object))
-
-        messages.sort(reverse=True)
-
-        result = {
-            'created': created,
-            'summary': summary,
-            'most_discussed': messages[:10]
-        }
-
-        return 200, result
-
     def dispatch(self, method, uri, input):
         """format and process the request"""
         # if X-HTTP-Method-Override is set, follow the override method
