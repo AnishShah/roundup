@@ -428,7 +428,16 @@ class Client:
         self.determine_language()
         # Open the database as the correct user.
         # TODO: add everything to RestfulDispatcher
-        self.determine_user()
+        try:
+            self.determine_user()
+        except LoginError, err:
+            self.response_code = http_.client.UNAUTHORIZED
+            self.write({'error': {
+                    'status': http_.client.UNAUTHORIZED,
+                    'msg': 'Unauthorized'
+                }})
+            return
+
         self.check_anonymous_access()
 
         # Call rest library to handle the request
@@ -1186,7 +1195,7 @@ class Client:
         if name is None:
             name = 'home'
 
-        tplname = name     
+        tplname = name
         if view:
             tplname = '%s.%s' % (name, view)
 
