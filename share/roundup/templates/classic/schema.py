@@ -65,6 +65,12 @@ msg = FileClass(db, "msg",
 file = FileClass(db, "file",
                 name=String())
 
+github_pullrequest_url = Class(db, "github_pullrequest_url",
+                               url=String(),
+                               pullrequest_number=String(),
+                               )
+github_pullrequest_url.setkey("pullrequest_number")
+
 # IssueClass automatically gets these properties in addition to the Class ones:
 #   title = String()
 #   messages = Multilink("msg")
@@ -75,7 +81,8 @@ issue = IssueClass(db, "issue",
                 assignedto=Link("user"),
                 keyword=Multilink("keyword"),
                 priority=Link("priority"),
-                status=Link("status"))
+                status=Link("status"),
+                github_pullrequest_urls=Multilink('github_pullrequest_url'))
 
 #
 # TRACKER SECURITY SETTINGS
@@ -92,7 +99,7 @@ db.security.addPermissionToRole('User', 'Email Access')
 
 # Assign the access and edit Permissions for issue, file and message
 # to regular users now
-for cl in 'issue', 'file', 'msg', 'keyword':
+for cl in 'issue', 'file', 'msg', 'keyword', 'github_pullrequest_url':
     db.security.addPermissionToRole('User', 'View', cl)
     db.security.addPermissionToRole('User', 'Edit', cl)
     db.security.addPermissionToRole('User', 'Create', cl)
@@ -167,7 +174,7 @@ db.security.addPermissionToRole('Anonymous', 'Register', 'user')
 
 # Allow anonymous users access to view issues (and the related, linked
 # information)
-for cl in 'issue', 'file', 'msg', 'keyword', 'priority', 'status':
+for cl in 'issue', 'file', 'msg', 'keyword', 'priority', 'status', 'github_pullrequest_url':
     db.security.addPermissionToRole('Anonymous', 'View', cl)
 
 # [OPTIONAL]
