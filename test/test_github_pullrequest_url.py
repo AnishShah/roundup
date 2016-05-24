@@ -2,6 +2,8 @@ import unittest
 import os
 import db_test_base
 import cgi
+import shutil
+import errno
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 from roundup.cgi import client
@@ -40,6 +42,14 @@ class TestCase(unittest.TestCase):
             'CONTENT_TYPE': 'application/json'
         }
         os.environ['SECRET_KEY'] = "secret123"
+
+    def tearDown(self):
+        self.db.close()
+        try:
+            shutil.rmtree(self.dirname)
+        except OSError, error:
+            if error.errno not in (errno.ENOENT, errno.ESRCH):
+                raise
 
     def _make_client(self, filename):
         request = HTTPRequest(filename)
@@ -97,6 +107,8 @@ class TestCase(unittest.TestCase):
         self.assertTrue(len(urls) == 1)
         url_id = self.db.github_pullrequest_url.lookup('2')
         self.assertEqual(url_id, '1')
+        state = self.db.github_pullrequest_url.get('1', 'state')
+        self.assertEqual(state, "open")
 
     def testPullRequestEventForBody(self):
         # When the body of a PR has string "fixes bpo123"
@@ -106,6 +118,40 @@ class TestCase(unittest.TestCase):
         self.assertTrue(len(urls) == 1)
         url_id = self.db.github_pullrequest_url.lookup('3')
         self.assertEqual(url_id, '1')
+        state = self.db.github_pullrequest_url.get('1', 'state')
+        self.assertEqual(state, "open")
+
+    def testMergedPullRequest(self):
+        # When pull request is merged
+        dummy_client = self._make_client("pullrequestopen.txt")
+        GitHubHandler(dummy_client)
+        urls = self.db.issue.get('1', 'github_pullrequest_urls')
+        self.assertTrue(len(urls) == 1)
+        url_id = self.db.github_pullrequest_url.lookup('2')
+        self.assertEqual(url_id, '1')
+        state = self.db.github_pullrequest_url.get('1', 'state')
+        self.assertEqual(state, "open")
+        self.db.close()
+        dummy_client = self._make_client("pullrequestmerged.txt")
+        GitHubHandler(dummy_client)
+        state = self.db.github_pullrequest_url.get('1', 'state')
+        self.assertEqual(state, "merged")
+
+    def testClosedPullRequest(self):
+        # When pull request is merged
+        dummy_client = self._make_client("pullrequestopen.txt")
+        GitHubHandler(dummy_client)
+        urls = self.db.issue.get('1', 'github_pullrequest_urls')
+        self.assertTrue(len(urls) == 1)
+        url_id = self.db.github_pullrequest_url.lookup('2')
+        self.assertEqual(url_id, '1')
+        state = self.db.github_pullrequest_url.get('1', 'state')
+        self.assertEqual(state, "open")
+        self.db.close()
+        dummy_client = self._make_client("pullrequestclosed.txt")
+        GitHubHandler(dummy_client)
+        state = self.db.github_pullrequest_url.get('1', 'state')
+        self.assertEqual(state, "closed")
 
 
 def test_suite():

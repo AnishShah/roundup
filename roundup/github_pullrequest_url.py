@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import os
+import enum
 
 
 if hasattr(hmac, "compare_digest"):
@@ -94,6 +95,7 @@ class PullRequest(Event):
         url = self._get_url()
         if action == 'opened':
             self.handle_create(url, issue_id)
+        self.handle_state(url)
 
     def _get_issue_id(self):
         title = self.data['pull_request']['title'].encode('utf-8')
@@ -108,6 +110,17 @@ class PullRequest(Event):
 
     def _get_url(self):
         return self.data['pull_request']['html_url'].encode('utf-8')
+
+    def handle_state(self, url):
+        url_id = self.db.github_pullrequest_url.filter(None, {'url': url})
+        url_exists = len(url_id) == 1
+        if url_exists:
+            if self.data['pull_request']['merged']:
+                state = "merged"
+            else:
+                state = self.data['pull_request']['state'].encode('utf-8')
+            self.db.github_pullrequest_url.set(url_id[0], state=state)
+            self.db.commit()
 
 
 class IssueComment(Event):
