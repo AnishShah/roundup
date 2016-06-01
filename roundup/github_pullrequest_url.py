@@ -1,11 +1,11 @@
 from roundup.exceptions import *
+from roundup import date
 
 import hashlib
 import hmac
 import json
 import re
 import os
-import enum
 
 
 if hasattr(hmac, "compare_digest"):
@@ -13,6 +13,9 @@ if hasattr(hmac, "compare_digest"):
 else:
     def compare_digest(a, b):
         return a == b
+
+
+valid_events = ('pull_request', 'issue_comment', 'pull_request_review_comment')
 
 
 class GitHubHandler:
@@ -29,12 +32,14 @@ class GitHubHandler:
 
     def _extract(self):
         event = self._get_event()
-        if event not in ('pull_request', 'issue_comment'):
+        if event not in valid_events:
             raise Reject('Unkown X-GitHub-Event %s' % event)
         if event == 'pull_request':
             PullRequest(self.db, self.data)
         elif event == 'issue_comment':
             IssueComment(self.db, self.data)
+        elif event == 'pull_request_review_comment':
+            PullRequestReviewComment(self.db, self.data)
 
     def _validate_webhook_secret(self):
         key = os.environ['SECRET_KEY']
@@ -77,6 +82,32 @@ class Event:
             urls.append(url_id)
             self.db.issue.set(issue_id, github_pullrequest_urls=urls)
             self.db.commit()
+
+    def handle_comment(self, comment):
+        url = self._get_url()
+        issue_id = self._get_issue_id_using_url(url)
+        if issue_id is not None:
+            user_id = self.db.user.lookup("admin")
+            messages = self.db.issue.get(issue_id, "messages")
+            now = date.Date(".")
+            min_date = now - date.Interval("00:30")
+            date_range_string = "from " + str(min_date)
+            msg_ids = self.db.msg.filter(None, {"is_github_comment": True,
+                                                "creation": date_range_string})
+            if not bool(msg_ids):
+                msg_id = self.db.msg.create(content=comment, author=user_id,
+                                            date=now, is_github_comment=True)
+                messages.append(msg_id)
+                self.db.issue.set(issue_id, messages=messages)
+                self.db.commit()
+
+    def _get_issue_id_using_url(self, url):
+        pr_id = self.db.github_pullrequest_url.filter(None, {'url': url})
+        pr_exists = len(pr_id) == 1
+        if pr_exists:
+            issue_id = self.db.issue.filter(None, {'github_pullrequest_urls': pr_id[0]})
+            if len(issue_id) == 1:
+                return issue_id[0]
 
     def _get_issue_id(self):
         raise NotImplementedError
@@ -131,8 +162,10 @@ class IssueComment(Event):
         action = self.data['action'].encode('utf-8')
         issue_id = self._get_issue_id()
         url = self._get_url()
+        comment = self._get_comment()
         if action == 'created':
             self.handle_create(url, issue_id)
+            self.handle_comment(comment)
 
     def _get_issue_id(self):
         body = self.data['comment']['body'].encode('utf-8')
@@ -145,3 +178,24 @@ class IssueComment(Event):
         if 'pull_request' in self.data['issue']:
             return self.data['issue']['pull_request']['html_url']\
                 .encode('utf-8')
+
+    def _get_comment(self):
+        comment_user = self.data['comment']['user']['login'].encode('utf-8')
+        comment = self.data['comment']['body'].encode('utf-8')
+        url = self.data['comment']['html_url'].encode('utf-8')
+        return '%s left a comment on GitHub:\n\n%s\n\n%s' % (comment_user,
+                                                           comment, url)
+
+
+class PullRequestReviewComment(IssueComment):
+
+    def __init__(self, db, data):
+        self.db = db
+        self.data = data
+        action = self.data['action'].encode('utf-8')
+        comment = self._get_comment()
+        if action == 'created':
+            self.handle_comment(comment)
+
+    def _get_url(self):
+        return self.data['pull_request']['html_url']

@@ -60,7 +60,8 @@ msg = FileClass(db, "msg",
                 summary=String(),
                 files=Multilink("file"),
                 messageid=String(),
-                inreplyto=String())
+                inreplyto=String(),
+                is_github_comment=Boolean())
 
 file = FileClass(db, "file",
                 name=String())
@@ -109,7 +110,7 @@ for cl in 'priority', 'status':
 
 # May users view other user information? Comment these lines out
 # if you don't want them to
-p = db.security.addPermission(name='View', klass='user', 
+p = db.security.addPermission(name='View', klass='user',
     properties=('id', 'organisation', 'phone', 'realname', 'timezone',
     'username'))
 db.security.addPermissionToRole('User', p)

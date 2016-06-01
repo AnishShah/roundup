@@ -51,14 +51,15 @@ class TestCase(unittest.TestCase):
             if error.errno not in (errno.ENOENT, errno.ESRCH):
                 raise
 
-    def _make_client(self, filename):
+    def _make_client(self, filename, create_issue=True):
         request = HTTPRequest(filename)
         form = cgi.FieldStorage(fp=request.rfile, environ=self.env,
                                 headers=request.headers)
         dummy_client = client.Client(self.instance, request, self.env, form)
         dummy_client.opendb("admin")
         self.db = dummy_client.db
-        self.db.issue.create(title="Hello")
+        if create_issue:
+            self.db.issue.create(title="Hello")
         return dummy_client
 
     def testSecretKey(self):
@@ -132,7 +133,7 @@ class TestCase(unittest.TestCase):
         state = self.db.github_pullrequest_url.get('1', 'state')
         self.assertEqual(state, "open")
         self.db.close()
-        dummy_client = self._make_client("pullrequestmerged.txt")
+        dummy_client = self._make_client("pullrequestmerged.txt", False)
         GitHubHandler(dummy_client)
         state = self.db.github_pullrequest_url.get('1', 'state')
         self.assertEqual(state, "merged")
@@ -148,10 +149,30 @@ class TestCase(unittest.TestCase):
         state = self.db.github_pullrequest_url.get('1', 'state')
         self.assertEqual(state, "open")
         self.db.close()
-        dummy_client = self._make_client("pullrequestclosed.txt")
+        dummy_client = self._make_client("pullrequestclosed.txt", False)
         GitHubHandler(dummy_client)
         state = self.db.github_pullrequest_url.get('1', 'state')
         self.assertEqual(state, "closed")
+
+    def testNonLinkedPullRequestReviewComments(self):
+        # Pull Request which is not linked to any issues on b.p.o
+        dummy_client = self._make_client("pullrequestreviewcomment.txt")
+        GitHubHandler(dummy_client)
+        self.assertEqual(len(self.db.issue.get("1", "messages")), 0)
+
+    def testPullRequestReviewComments(self):
+        # Pull Request which is linked to an issue on b.p.o
+        dummy_client = self._make_client("pullrequestevent.txt")
+        GitHubHandler(dummy_client)
+        self.db.close()
+        dummy_client =
+        self._make_client("pullrequestreviewcomment.txt", False)
+        GitHubHandler(dummy_client)
+        self.assertEqual(len(self.db.issue.get("1", "messages")), 1)
+        self.db.close()
+        dummy_client = self._make_client("pullrequestreviewcomment1.txt", False)
+        GitHubHandler(dummy_client)
+        self.assertEqual(len(self.db.issue.get("1", "messages")), 1)
 
 
 def test_suite():
